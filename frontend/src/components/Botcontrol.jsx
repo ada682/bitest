@@ -1,8 +1,10 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useStore } from '../store/useStore'
 
 export default function BotControl() {
   const { botStatus, config, setConfig, startBot, stopBot, statusMessage, lastError, contracts } = useStore()
+  const [searchTerm, setSearchTerm] = useState('')
+  
   const isRunning = botStatus === 'RUNNING'
 
   const handleStart = async () => {
@@ -10,29 +12,55 @@ export default function BotControl() {
     else await startBot()
   }
 
-  // Display symbol without _UMCBL
   const cleanSymbol = (sym) => sym?.replace('_UMCBL', '') || sym
+
+  // Filter contracts berdasarkan search
+  const filteredContracts = contracts.filter(c => 
+    c.symbol.toLowerCase().includes(searchTerm.toLowerCase())
+  )
 
   return (
     <div className="panel p-4 sm:p-5 max-w-lg mx-auto lg:max-w-none">
       <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-4">Bot Configuration</div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-        {/* Symbol */}
+        {/* Symbol dengan search */}
         <div className="sm:col-span-2">
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Symbol</label>
+          
+          {/* Search input */}
+          <input
+            type="text"
+            placeholder="🔍 Search pair (e.g., BTC, ETH, SOL)..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent mb-2"
+            disabled={isRunning}
+          />
+          
+          {/* Dropdown dengan scroll */}
           <select
             value={config.symbol}
             onChange={e => setConfig({ symbol: e.target.value })}
             disabled={isRunning}
+            size={8}
             className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent disabled:opacity-50"
           >
-            {contracts.length > 0 ? contracts.slice(0, 50).map(c => (
-              <option key={c.symbol} value={c.symbol}>{cleanSymbol(c.symbol)}</option>
-            )) : (
-              <option value="BTCUSDT">BTCUSDT</option>
+            {filteredContracts.length === 0 ? (
+              <option value="" disabled>No pairs found</option>
+            ) : (
+              filteredContracts.map(c => (
+                <option key={c.symbol} value={c.symbol}>
+                  {cleanSymbol(c.symbol)}
+                </option>
+              ))
             )}
           </select>
+          
+          {/* Info jumlah pair */}
+          <div className="text-[9px] font-mono text-muted mt-1">
+            Showing {filteredContracts.length} of {contracts.length} pairs
+          </div>
         </div>
 
         {/* Leverage */}
