@@ -50,7 +50,7 @@ class BitgetClient:
 
     async def get_contracts(self, product_type: str = "umcbl") -> list:
         data = await self.get("/api/mix/v1/market/contracts", {"productType": product_type})
-        return data.get("data", [])
+        return data.get("data") or []
 
     async def get_ticker(self, symbol: str) -> dict:
         data = await self.get("/api/mix/v1/market/ticker", {"symbol": symbol})
