@@ -1,0 +1,241 @@
+"""
+Main bot engine - manages the scalping trading loop.
+"""
+
+import asyncio
+import json
+import time
+import logging
+from typing import Optional, Callable, Dict, Any
+
+from services.bitget_client import bitget
+from services.deepseek_ai import deepseek_ai
+from services.chart_generator import generate_chart_image
+from utils.indicators import compute_all, format_ohlcv_text, calculate_position_size
+
+logger = logging.getLogger(__name__)
+
+
+class BotEngine:
+    def __init__(self):
+        self.running = False
+        self.config: Dict[str, Any] = {}
+        self.state = {
+            "status": "IDLE",
+            "open_position": None,
+            "last_signal": None,
+            "last_error": None,
+            "trade_count": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "total_pnl": 0.0,
+        }
+        self._task: Optional[asyncio.Task] = None
+        self._listeners: list[Callable] = []
+
+    def add_listener(self, fn: Callable):
+        self._listeners.append(fn)
+
+    def _emit(self, event: str, data: Any):
+        for fn in self._listeners:
+            try:
+                fn(event, data)
+            except Exception:
+                pass
+
+    async def start(self, config: dict):
+        if self.running:
+            return {"ok": False, "reason": "Bot already running"}
+        self.config = config
+        self.running = True
+        self.state["status"] = "RUNNING"
+        self._task = asyncio.create_task(self._loop())
+        return {"ok": True}
+
+    async def stop(self):
+        self.running = False
+        if self._task:
+            self._task.cancel()
+        self.state["status"] = "IDLE"
+        return {"ok": True}
+
+    async def shutdown(self):
+        await self.stop()
+        await bitget.close()
+        await deepseek_ai.close()
+
+    async def _loop(self):
+        logger.info("Bot loop started")
+        while self.running:
+            try:
+                await self._cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Bot loop error: {e}")
+                self.state["last_error"] = str(e)
+                self._emit("error", str(e))
+                await asyncio.sleep(5)
+
+        self.state["status"] = "IDLE"
+        logger.info("Bot loop stopped")
+
+    async def _cycle(self):
+        cfg = self.config
+        symbol = cfg.get("symbol", "BTCUSDT_UMCBL")
+        margin_coin = "USDT"
+        leverage = str(cfg.get("leverage", "10"))
+        mode = cfg.get("mode", "MANUAL")
+        manual_margin = cfg.get("manual_margin", None)
+        tp_pct = cfg.get("tp_pct", 0.004)
+        sl_pct = cfg.get("sl_pct", 0.002)
+
+        # 1. Fetch candle data
+        self._emit("status", "Fetching market data...")
+        candles_1m = await bitget.get_candles(symbol, "1m", 100)
+        candles_3m = await bitget.get_candles(symbol, "3m", 100)
+
+        if not candles_1m or len(candles_1m) < 30:
+            self._emit("status", "Insufficient candle data, waiting...")
+            await asyncio.sleep(10)
+            return
+
+        # 2. Generate chart image
+        self._emit("status", "Generating chart...")
+        chart_b64 = generate_chart_image(candles_1m, symbol.replace("_UMCBL", "").replace("USDT", "/USDT"), "1m")
+
+        # 3. Compute indicators
+        self._emit("status", "Computing indicators...")
+        indicators_1m = compute_all(candles_1m)
+        ohlcv_text = f"=== 1m Candles ===\n{format_ohlcv_text(candles_1m, 50)}\n\n=== 3m Candles ===\n{format_ohlcv_text(candles_3m, 30)}"
+
+        # 4. AI analysis
+        self._emit("status", "Sending to AI for analysis...")
+        decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_b64)
+
+        self.state["last_signal"] = {
+            "symbol": symbol,
+            "decision": decision.get("decision"),
+            "entry": decision.get("entry"),
+            "tp": decision.get("tp"),
+            "sl": decision.get("sl"),
+            "confidence": decision.get("confidence"),
+            "reason": decision.get("reason"),
+            "timestamp": int(time.time() * 1000),
+        }
+        self._emit("signal", self.state["last_signal"])
+
+        # 5. Execute trade if signal is strong
+        trade_decision = decision.get("decision")
+        confidence = decision.get("confidence", 0)
+
+        if trade_decision in ("BUY", "SELL") and confidence > 75:
+            await self._execute_trade(
+                symbol, margin_coin, leverage, mode, manual_margin,
+                trade_decision, decision, tp_pct, sl_pct
+            )
+            # 6. Monitor position
+            await self._monitor_position(symbol)
+            # Wait before next trade
+            await asyncio.sleep(3)
+        else:
+            self._emit("status", f"No trade. Decision: {trade_decision}, Confidence: {confidence}%")
+            await asyncio.sleep(15)
+
+    async def _execute_trade(self, symbol, margin_coin, leverage, mode, manual_margin,
+                              direction, decision, tp_pct, sl_pct):
+        try:
+            # Set position mode
+            await bitget.set_position_mode(symbol, margin_coin)
+
+            # Set leverage for both sides
+            await bitget.set_leverage(symbol, leverage, margin_coin, "long")
+            await bitget.set_leverage(symbol, leverage, margin_coin, "short")
+
+            # Get account balance
+            account = await bitget.get_account(symbol, margin_coin)
+            balance = float(account.get("available", 0))
+            lev = float(leverage)
+            price = float(decision.get("entry", 0))
+
+            if price == 0:
+                # Fetch current price
+                ticker = await bitget.get_ticker(symbol)
+                price = float(ticker.get("last", 0))
+
+            if balance <= 0 or price <= 0:
+                self._emit("error", "Cannot execute: invalid balance or price")
+                return
+
+            # Determine size
+            # Get volume_place from stored contract info if available
+            volume_place = int(self.config.get("volume_place", 3))
+            size = calculate_position_size(balance, lev, price, mode, manual_margin, volume_place)
+
+            side_open = "open_long" if direction == "BUY" else "open_short"
+            side_close = "close_long" if direction == "BUY" else "close_short"
+
+            # Place main order
+            self._emit("status", f"Placing {direction} order, size={size}...")
+            order_resp = await bitget.place_order(symbol, margin_coin, size, side_open)
+            logger.info(f"Order response: {order_resp}")
+
+            # Calculate TP/SL
+            if direction == "BUY":
+                tp_price = str(round(price * (1 + tp_pct), 6))
+                sl_price = str(round(price * (1 - sl_pct), 6))
+            else:
+                tp_price = str(round(price * (1 - tp_pct), 6))
+                sl_price = str(round(price * (1 + sl_pct), 6))
+
+            await asyncio.sleep(1)
+
+            # Set TP
+            await bitget.place_plan(symbol, margin_coin, size, side_close, tp_price, "profit_plan")
+            # Set SL
+            await bitget.place_plan(symbol, margin_coin, size, side_close, sl_price, "loss_plan")
+
+            self.state["open_position"] = {
+                "symbol": symbol,
+                "direction": direction,
+                "entry": price,
+                "tp": float(tp_price),
+                "sl": float(sl_price),
+                "size": size,
+                "timestamp": int(time.time() * 1000),
+            }
+            self.state["trade_count"] += 1
+            self._emit("position_open", self.state["open_position"])
+
+        except Exception as e:
+            logger.error(f"Trade execution error: {e}")
+            self._emit("error", f"Trade error: {str(e)}")
+
+    async def _monitor_position(self, symbol: str):
+        """Poll position until closed."""
+        self._emit("status", "Monitoring open position...")
+        max_wait = 300  # 5 min max
+        start = time.time()
+
+        while time.time() - start < max_wait:
+            await asyncio.sleep(3)
+            try:
+                positions = await bitget.get_positions()
+                open_pos = [p for p in positions if p.get("symbol") == symbol and float(p.get("total", 0)) > 0]
+
+                if not open_pos:
+                    # Position closed
+                    pos_data = self.state.get("open_position", {})
+                    pnl = 0.0
+                    self.state["total_pnl"] += pnl
+                    self.state["open_position"] = None
+                    self._emit("position_close", {"symbol": symbol, "pnl": pnl})
+                    return
+            except Exception as e:
+                logger.error(f"Monitor error: {e}")
+
+        # Force check after timeout
+        self.state["open_position"] = None
+
+    def get_state(self) -> dict:
+        return {**self.state}
