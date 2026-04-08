@@ -6,21 +6,12 @@ router = APIRouter()
 
 @router.get("/contracts")
 async def get_contracts():
-    # V2: productType = 'USDT-FUTURES'
+    # V2: get_contracts already normalizes fields including quoteCoin
     data = await bitget.get_contracts("USDT-FUTURES")
     if not data:
         return {"data": [], "error": "No contract data returned from exchange"}
-    result = [
-        {
-            "symbol": c.get("symbol"),
-            "baseCoin": c.get("baseVolume"),
-            "quoteCoin": "USDT",
-            "lastPrice": c.get("lastPr"),
-            "volume24h": c.get("usdtVolume"),
-        }
-        for c in data
-        if isinstance(c, dict)
-    ]
+    # Filter USDT pairs only (all should be, but just in case)
+    result = [c for c in data if c.get("quoteCoin") == "USDT"]
     return {"data": result}
 
 
