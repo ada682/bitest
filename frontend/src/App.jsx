@@ -7,16 +7,18 @@ import BotControl from './components/Botcontrol'
 import TradeHistory from './components/Tradehistory'
 
 export default function App() {
-  const { activeTab, initWs, fetchBotState, fetchContracts, fetchTicker, fetchCandles, fetchTrades } = useStore()
+  const { activeTab, initWs, fetchBotState, fetchContracts, fetchTicker, fetchCandles, fetchTrades, fetchFuturesBalance } = useStore()
 
   useEffect(() => {
     initWs()
     fetchBotState()
     fetchContracts()
     fetchTrades()
+    fetchFuturesBalance()
     const interval = setInterval(() => {
       fetchTicker()
       fetchCandles()
+      fetchFuturesBalance()
     }, 5000)
     return () => clearInterval(interval)
   }, [])
@@ -25,7 +27,6 @@ export default function App() {
     <div className="flex flex-col h-screen bg-bg">
       <Header />
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar — hidden on mobile, shown on lg+ */}
         <div className="hidden lg:block">
           <Sidebar />
         </div>
@@ -36,7 +37,6 @@ export default function App() {
           {activeTab === 'market' && <Dashboard />}
         </main>
       </div>
-      {/* Bottom nav — only on mobile */}
       <BottomNav />
     </div>
   )
