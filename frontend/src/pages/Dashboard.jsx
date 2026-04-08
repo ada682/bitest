@@ -1,6 +1,6 @@
 import React from 'react'
 import { useStore } from '../store/useStore'
-import StatCard from '../components/StatCard'
+import StatCard from '../components/statCard'
 import SignalPanel from '../components/SignalPanel'
 import PositionPanel from '../components/PositionPanel'
 import ProfitChart from '../components/ProfitChart'
