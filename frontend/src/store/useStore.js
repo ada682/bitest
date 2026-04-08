@@ -14,7 +14,7 @@ export const useStore = create((set, get) => ({
   lossCount: 0,
   totalPnl: 0,
   config: {
-    symbol: 'BTCUSDT',          // V2: no _UMCBL suffix
+    symbol: 'BTCUSDT',
     leverage: '10',
     mode: 'MANUAL',
     manual_margin: 10,
@@ -31,6 +31,14 @@ export const useStore = create((set, get) => ({
   activeTab: 'dashboard',
   wsConnected: false,
   ws: null,
+  futuresBalance: {
+    available: "0",
+    locked: "0",
+    equity: "0",
+    usdtEquity: "0",
+    unrealizedPL: "0",
+    loading: false,
+  },
 
   setConfig: (updates) => set(state => ({ config: { ...state.config, ...updates } })),
   setActiveTab: (tab) => set({ activeTab: tab }),
@@ -85,14 +93,18 @@ export const useStore = create((set, get) => ({
   fetchContracts: async () => {
     try {
       const res = await axios.get(`${API}/api/market/contracts`)
-      set({ contracts: res.data.data || [] })
-      // Auto-select first contract if default not found
+      const contracts = res.data.data || []
+      console.log('📊 Total contracts fetched:', contracts.length)
+      set({ contracts })
+      
       const { config, contracts: c } = get()
-      const found = (res.data.data || []).find(x => x.symbol === config.symbol)
-      if (!found && res.data.data?.length > 0) {
-        set(state => ({ config: { ...state.config, symbol: res.data.data[0].symbol } }))
+      const found = c.find(x => x.symbol === config.symbol)
+      if (!found && c.length > 0) {
+        set(state => ({ config: { ...state.config, symbol: c[0].symbol } }))
       }
-    } catch {}
+    } catch (err) {
+      console.error('Failed to fetch contracts:', err)
+    }
   },
 
   fetchTicker: async () => {
@@ -138,5 +150,27 @@ export const useStore = create((set, get) => ({
       pnlHistory.forEach(d => { cum += d.pnl; d.cumulative = parseFloat(cum.toFixed(4)) })
       set({ pnlHistory })
     } catch {}
+  },
+
+  fetchFuturesBalance: async () => {
+    const { config } = get()
+    set(state => ({ futuresBalance: { ...state.futuresBalance, loading: true } }))
+    try {
+      const res = await axios.get(`${API}/api/market/balance/${config.symbol}`)
+      const data = res.data.data || {}
+      set(state => ({
+        futuresBalance: {
+          available: data.available || "0",
+          locked: data.locked || "0",
+          equity: data.accountEquity || data.equity || "0",
+          usdtEquity: data.usdtEquity || "0",
+          unrealizedPL: data.unrealizedPL || "0",
+          loading: false,
+        }
+      }))
+    } catch (err) {
+      console.error("Failed to fetch balance:", err)
+      set(state => ({ futuresBalance: { ...state.futuresBalance, loading: false } }))
+    }
   },
 }))
