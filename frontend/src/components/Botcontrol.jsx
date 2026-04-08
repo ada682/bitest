@@ -10,6 +10,9 @@ export default function BotControl() {
     else await startBot()
   }
 
+  // Display symbol without _UMCBL
+  const cleanSymbol = (sym) => sym?.replace('_UMCBL', '') || sym
+
   return (
     <div className="panel p-4 sm:p-5 max-w-lg mx-auto lg:max-w-none">
       <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-4">Bot Configuration</div>
@@ -24,10 +27,10 @@ export default function BotControl() {
             disabled={isRunning}
             className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent disabled:opacity-50"
           >
-            {contracts.length > 0 ? contracts.slice(0, 30).map(c => (
-              <option key={c.symbol} value={c.symbol}>{c.symbol?.replace('_UMCBL','')}</option>
+            {contracts.length > 0 ? contracts.slice(0, 50).map(c => (
+              <option key={c.symbol} value={c.symbol}>{cleanSymbol(c.symbol)}</option>
             )) : (
-              <option value="BTCUSDT_UMCBL">BTCUSDT</option>
+              <option value="BTCUSDT">BTCUSDT</option>
             )}
           </select>
         </div>
@@ -60,7 +63,6 @@ export default function BotControl() {
           </div>
         </div>
 
-        {/* Manual margin */}
         {config.mode === 'MANUAL' && (
           <div>
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Margin (USDT)</label>
@@ -74,7 +76,6 @@ export default function BotControl() {
           </div>
         )}
 
-        {/* TP % */}
         <div>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">
             Take Profit {(config.tp_pct * 100).toFixed(2)}%
@@ -88,7 +89,6 @@ export default function BotControl() {
           />
         </div>
 
-        {/* SL % */}
         <div>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">
             Stop Loss {(config.sl_pct * 100).toFixed(2)}%
@@ -103,7 +103,6 @@ export default function BotControl() {
         </div>
       </div>
 
-      {/* Start / Stop */}
       <button
         onClick={handleStart}
         className={`w-full py-3 rounded font-display font-semibold text-sm tracking-wide transition-all ${
