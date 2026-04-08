@@ -6,20 +6,20 @@ router = APIRouter()
 
 @router.get("/contracts")
 async def get_contracts():
-    data = await bitget.get_contracts("umcbl")
-    # Filter active contracts only
+    # V2: productType = 'USDT-FUTURES'
+    data = await bitget.get_contracts("USDT-FUTURES")
+    if not data:
+        return {"data": [], "error": "No contract data returned from exchange"}
     result = [
         {
             "symbol": c.get("symbol"),
-            "baseCoin": c.get("baseCoin"),
-            "quoteCoin": c.get("quoteCoin"),
-            "minTradeNum": c.get("minTradeNum"),
-            "volumePlace": c.get("volumePlace"),
-            "pricePlace": c.get("pricePlace"),
-            "maxLeverage": c.get("maxLeverage"),
+            "baseCoin": c.get("baseVolume"),
+            "quoteCoin": "USDT",
+            "lastPrice": c.get("lastPr"),
+            "volume24h": c.get("usdtVolume"),
         }
         for c in data
-        if c.get("quoteCoin") == "USDT"
+        if isinstance(c, dict)
     ]
     return {"data": result}
 
