@@ -24,16 +24,14 @@ const CandleTooltip = ({ active, payload }) => {
 }
 
 function CandlestickBar(props) {
-  const { x, y, width, height, payload } = props
+  const { x, width, payload, yAxisMap } = props
   if (!payload) return null
 
   const { open, close, high, low } = payload
   const isUp = close >= open
   const color = isUp ? '#22c55e' : '#ef4444'
-  const bodyTop = Math.min(y, y + height)
-  const bodyH = Math.max(Math.abs(height), 1)
 
-  const scale = props.yAxisMap?.[0]?.scale
+  const scale = yAxisMap?.[0]?.scale
   if (!scale) return null
 
   const highY = scale(high)
@@ -55,23 +53,26 @@ function CandlestickBar(props) {
 export default function CandleChart() {
   const { candles, config } = useStore()
 
+  const displaySymbol = config.symbol.replace('_UMCBL', '').replace('USDT', '/USDT')
+
   const data = useMemo(() => {
     if (!candles?.length) return []
     return candles.slice(-60).map(c => ({
+      // V2 candle: [ts, open, high, low, close, baseVol, quoteVol]
       time: new Date(Number(c[0])).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
-      open: parseFloat(c[1]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[3]),
-      close: parseFloat(c[4]),
+      open:   parseFloat(c[1]),
+      high:   parseFloat(c[2]),
+      low:    parseFloat(c[3]),
+      close:  parseFloat(c[4]),
       volume: parseFloat(c[5]),
     }))
   }, [candles])
 
   const [minPrice, maxPrice] = useMemo(() => {
     if (!data.length) return [0, 1]
-    const lows = data.map(d => d.low)
+    const lows  = data.map(d => d.low)
     const highs = data.map(d => d.high)
-    const pad = (Math.max(...highs) - Math.min(...lows)) * 0.05
+    const pad   = (Math.max(...highs) - Math.min(...lows)) * 0.05
     return [Math.min(...lows) - pad, Math.max(...highs) + pad]
   }, [data])
 
@@ -79,7 +80,7 @@ export default function CandleChart() {
     return (
       <div className="panel p-4">
         <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-3">
-          {config.symbol.replace('_UMCBL','')} — 1m
+          {displaySymbol} — 1m
         </div>
         <div className="flex items-center justify-center h-52 text-muted text-sm">
           Waiting for market data...
@@ -92,7 +93,7 @@ export default function CandleChart() {
     <div className="panel p-4">
       <div className="flex items-center justify-between mb-3">
         <span className="text-[10px] font-mono text-muted uppercase tracking-widest">
-          {config.symbol.replace('_UMCBL','')} — 1m
+          {displaySymbol} — 1m
         </span>
         <span className="text-[11px] font-mono text-text-faint">
           {data[data.length - 1]?.close?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
