@@ -2,15 +2,16 @@ import React from 'react'
 import { useStore } from '../store/useStore'
 
 export default function Header() {
-  const { botStatus, wsConnected, ticker, config } = useStore()
+  const { botStatus, wsConnected, ticker, config, futuresBalance } = useStore()
 
-  // V2 uses lastPr, fallback to last for compat
   const lastPrice = parseFloat(ticker?.lastPr || ticker?.last || 0)
   const priceChange = parseFloat(ticker?.change24h || ticker?.priceChangePercent || 0)
   const changeColor = priceChange >= 0 ? 'text-green-bright' : 'text-red-bright'
-
-  // Clean symbol display: remove _UMCBL if present
   const displaySymbol = config.symbol.replace('_UMCBL', '').replace('USDT', '/USDT')
+
+  const availableBalance = parseFloat(futuresBalance.available || 0)
+  const unrealizedPL = parseFloat(futuresBalance.unrealizedPL || 0)
+  const plColor = unrealizedPL >= 0 ? 'text-green-bright' : 'text-red-bright'
 
   return (
     <header className="flex items-center justify-between px-3 sm:px-6 py-2.5 sm:py-3 border-b border-border bg-surface sticky top-0 z-50">
@@ -46,7 +47,34 @@ export default function Header() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 sm:gap-4">
+      <div className="flex items-center gap-3 sm:gap-4">
+        {/* Balance Display Desktop */}
+        <div className="hidden md:flex flex-col items-end">
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-mono text-muted uppercase tracking-wider">Futures Balance</span>
+            {futuresBalance.loading ? (
+              <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <span className="font-mono text-[13px] font-semibold text-text">
+                {availableBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+              </span>
+            )}
+          </div>
+          {unrealizedPL !== 0 && (
+            <div className={`text-[9px] font-mono ${plColor}`}>
+              Unrealized PnL: {unrealizedPL >= 0 ? '+' : ''}{unrealizedPL.toFixed(2)} USDT
+            </div>
+          )}
+        </div>
+
+        {/* Balance Display Mobile */}
+        <div className="md:hidden flex items-center gap-1">
+          <span className="text-[9px] font-mono text-muted">Bal:</span>
+          <span className="font-mono text-[11px] font-semibold text-text">
+            {availableBalance.toFixed(2)}
+          </span>
+        </div>
+
         <div className="hidden sm:flex items-center gap-2">
           <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-bright' : 'bg-muted'}`}
                style={wsConnected ? { animation: 'pulse-dot 2s infinite' } : {}} />
