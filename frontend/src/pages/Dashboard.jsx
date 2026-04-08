@@ -18,8 +18,8 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Stats row */}
-      <div className="grid grid-cols-5 gap-3">
+      {/* Stats row — 2 cols on mobile, 5 on desktop */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
         <StatCard
           label="Total PnL"
           value={`${realPnl >= 0 ? '+' : ''}${parseFloat(realPnl).toFixed(4)}`}
@@ -28,7 +28,7 @@ export default function Dashboard() {
           mono
         />
         <StatCard label="Total Trades" value={total || 0} sub="executed" />
-        <StatCard label="Win Rate" value={winrate === '—' ? '—' : `${winrate}%`} 
+        <StatCard label="Win Rate" value={winrate === '—' ? '—' : `${winrate}%`}
                   color={parseFloat(winrate) >= 50 ? 'green' : 'red'} />
         <StatCard
           label="Avg Profit"
@@ -41,18 +41,19 @@ export default function Dashboard() {
           label="W / L"
           value={`${wins} / ${losses}`}
           sub="wins vs losses"
+          className="col-span-2 sm:col-span-1"
         />
       </div>
 
-      {/* Main grid */}
-      <div className="grid grid-cols-3 gap-4">
-        {/* Left 2 cols: chart + profit */}
-        <div className="col-span-2 flex flex-col gap-4">
+      {/* Main grid — stacked on mobile, 3-col on desktop */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Charts — full width on mobile, 2 cols on desktop */}
+        <div className="lg:col-span-2 flex flex-col gap-4">
           <CandleChart />
           <ProfitChart />
         </div>
 
-        {/* Right col: signal + position */}
+        {/* Signal + Position — full width on mobile */}
         <div className="flex flex-col gap-4">
           <SignalPanel />
           <PositionPanel />
