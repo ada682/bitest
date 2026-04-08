@@ -97,7 +97,23 @@ class BitgetClient:
             "granularity": granularity,
             "limit": str(limit),
         })
-        return resp.get("data") or []
+        data = resp.get("data")
+        if data and isinstance(data, list):
+            cleaned_data = []
+            for candle in data:
+                if isinstance(candle, list) and len(candle) >= 7:
+                    cleaned_candle = [
+                        int(candle[0]),      # timestamp
+                        float(candle[1]),    # open
+                        float(candle[2]),    # high
+                        float(candle[3]),    # low
+                        float(candle[4]),    # close
+                        float(candle[5]),    # base volume
+                        float(candle[6]),    # quote volume
+                    ]
+                    cleaned_data.append(cleaned_candle)
+            return cleaned_data
+        return data or []
 
     async def get_symbol_leverage(self, symbol: str) -> dict:
         resp = await self.get("/api/v2/mix/market/symbol-leverage", {
@@ -108,13 +124,21 @@ class BitgetClient:
 
     # --- Account (V2) ---
 
-    async def get_account(self, symbol: str, margin_coin: str = "USDT") -> dict:
+    async def get_futures_account(self, symbol: str = "BTCUSDT", margin_coin: str = "USDT") -> dict:
+        """Get futures account balance for a specific symbol."""
         resp = await self.get("/api/v2/mix/account/account", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
             "marginCoin": margin_coin,
         })
         return resp.get("data") or {}
+
+    async def get_all_futures_accounts(self) -> list:
+        """Get all futures account balances across all margin coins."""
+        resp = await self.get("/api/v2/mix/account/accounts", {
+            "productType": "USDT-FUTURES",
+        })
+        return resp.get("data") or []
 
     async def set_leverage(self, symbol: str, leverage: str, margin_coin: str = "USDT", hold_side: str = "long") -> dict:
         return await self.post("/api/v2/mix/account/set-leverage", {
