@@ -24,7 +24,8 @@ export default function PositionPanel() {
     )
   }
 
-  const currentPrice = ticker ? parseFloat(ticker.last || 0) : openPosition.entry
+  // V2 uses lastPr, fallback to last
+  const currentPrice = ticker ? parseFloat(ticker.lastPr || ticker.last || 0) : openPosition.entry
   const priceDiff = currentPrice - openPosition.entry
   const isLong = openPosition.direction === 'BUY'
   const unrealizedPnl = isLong ? priceDiff * parseFloat(openPosition.size) : -priceDiff * parseFloat(openPosition.size)
@@ -35,6 +36,8 @@ export default function PositionPanel() {
   const tpDist = Math.abs((openPosition.tp - openPosition.entry) / openPosition.entry * 100)
   const slDist = Math.abs((openPosition.sl - openPosition.entry) / openPosition.entry * 100)
   const progress = Math.min(100, Math.abs(priceDiff) / Math.abs(openPosition.tp - openPosition.entry) * 100)
+
+  const displaySymbol = openPosition.symbol?.replace('_UMCBL', '').replace('USDT', '/USDT')
 
   return (
     <div className={`panel p-4 border ${isLong ? 'border-green-dim' : 'border-red-dim'} ${isLong ? 'glow-green' : 'glow-red'}`}>
@@ -49,18 +52,16 @@ export default function PositionPanel() {
         }`}>
           {isLong ? 'LONG' : 'SHORT'}
         </div>
-        <span className="font-display font-semibold text-text">
-          {openPosition.symbol?.replace('_UMCBL', '')}
-        </span>
+        <span className="font-display font-semibold text-text">{displaySymbol}</span>
         <span className="font-mono text-sm text-text-faint">x{openPosition.size}</span>
       </div>
 
       <div className="grid grid-cols-2 gap-2 mb-4">
         {[
-          { l: 'Entry', v: openPosition.entry?.toFixed(4) },
-          { l: 'Current', v: currentPrice.toFixed(4) },
+          { l: 'Entry',       v: openPosition.entry?.toFixed(4) },
+          { l: 'Current',     v: currentPrice.toFixed(4) },
           { l: 'Take Profit', v: openPosition.tp?.toFixed(4), col: 'text-green-bright' },
-          { l: 'Stop Loss', v: openPosition.sl?.toFixed(4), col: 'text-red-bright' },
+          { l: 'Stop Loss',   v: openPosition.sl?.toFixed(4), col: 'text-red-bright' },
         ].map(({ l, v, col }) => (
           <div key={l} className="bg-panel rounded p-2">
             <div className="text-[9px] font-mono text-muted uppercase mb-1">{l}</div>
@@ -77,7 +78,7 @@ export default function PositionPanel() {
           </span>
         </div>
         <div className="h-1 bg-panel rounded-full overflow-hidden">
-          <div className="h-full rounded-full transition-all duration-300 bg-accent" 
+          <div className="h-full rounded-full transition-all duration-300 bg-accent"
                style={{ width: `${progress}%` }} />
         </div>
         <div className="flex justify-between mt-1">
