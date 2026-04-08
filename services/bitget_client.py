@@ -9,6 +9,7 @@ from typing import Optional
 
 BITGET_BASE_URL = "https://api.bitget.com"
 
+
 class BitgetClient:
     def __init__(self):
         self.api_key = os.getenv("BITGET_API_KEY", "")
@@ -46,97 +47,161 @@ class BitgetClient:
         resp = await self.client.post(path, headers=headers, content=body_str)
         return resp.json()
 
-    # --- Market ---
+    # --- Market (V2) ---
 
-    async def get_contracts(self, product_type: str = "umcbl") -> list:
-        data = await self.get("/api/mix/v1/market/contracts", {"productType": product_type})
-        return data.get("data") or []
+    async def get_contracts(self, product_type: str = "USDT-FUTURES") -> list:
+        """V2: productType uses 'USDT-FUTURES' instead of 'umcbl'"""
+        resp = await self.get("/api/v2/mix/market/tickers", {"productType": product_type})
+        return resp.get("data") or []
 
     async def get_ticker(self, symbol: str) -> dict:
-        data = await self.get("/api/mix/v1/market/ticker", {"symbol": symbol})
-        return data.get("data", {})
+        """V2 ticker. Returns single dict."""
+        resp = await self.get("/api/v2/mix/market/ticker", {
+            "symbol": symbol,
+            "productType": "USDT-FUTURES",
+        })
+        data = resp.get("data")
+        if isinstance(data, list) and data:
+            return data[0]
+        return data or {}
 
     async def get_candles(self, symbol: str, granularity: str, limit: int = 100) -> list:
-        data = await self.get("/api/mix/v1/market/candles", {
+        resp = await self.get("/api/v2/mix/market/candles", {
             "symbol": symbol,
+            "productType": "USDT-FUTURES",
             "granularity": granularity,
             "limit": str(limit),
         })
-        return data.get("data", [])
+        return resp.get("data") or []
 
     async def get_symbol_leverage(self, symbol: str) -> dict:
-        data = await self.get("/api/mix/v1/market/symbol-leverage", {"symbol": symbol})
-        return data.get("data", {})
+        resp = await self.get("/api/v2/mix/market/symbol-leverage", {
+            "symbol": symbol,
+            "productType": "USDT-FUTURES",
+        })
+        return resp.get("data") or {}
 
-    # --- Account ---
+    # --- Account (V2) ---
 
     async def get_account(self, symbol: str, margin_coin: str = "USDT") -> dict:
-        data = await self.get("/api/mix/v1/account/account", {"symbol": symbol, "marginCoin": margin_coin})
-        return data.get("data", {})
+        resp = await self.get("/api/v2/mix/account/account", {
+            "symbol": symbol,
+            "productType": "USDT-FUTURES",
+            "marginCoin": margin_coin,
+        })
+        return resp.get("data") or {}
 
     async def set_leverage(self, symbol: str, leverage: str, margin_coin: str = "USDT", hold_side: str = "long") -> dict:
-        return await self.post("/api/mix/v1/account/setLeverage", {
+        return await self.post("/api/v2/mix/account/set-leverage", {
             "symbol": symbol,
+            "productType": "USDT-FUTURES",
             "marginCoin": margin_coin,
             "leverage": leverage,
             "holdSide": hold_side,
         })
 
     async def set_position_mode(self, symbol: str, margin_coin: str = "USDT") -> dict:
-        return await self.post("/api/mix/v1/account/setPositionMode", {
-            "symbol": symbol,
-            "marginCoin": margin_coin,
-            "holdMode": "single_hold",
+        return await self.post("/api/v2/mix/account/set-position-mode", {
+            "productType": "USDT-FUTURES",
+            "posMode": "one_way_mode",
         })
 
-    async def get_positions(self, product_type: str = "umcbl") -> list:
-        data = await self.get("/api/mix/v1/position/allPosition", {"productType": product_type})
-        return data.get("data", [])
+    async def get_positions(self, product_type: str = "USDT-FUTURES") -> list:
+        resp = await self.get("/api/v2/mix/position/all-position", {
+            "productType": product_type,
+            "marginCoin": "USDT",
+        })
+        return resp.get("data") or []
 
-    async def get_account_bill(self, symbol: str, margin_coin: str = "USDT", start_time: str = None, end_time: str = None, page_size: int = 100) -> list:
-        params = {"symbol": symbol, "marginCoin": margin_coin, "pageSize": str(page_size)}
+    async def get_account_bill(self, symbol: str, margin_coin: str = "USDT",
+                               start_time: str = None, end_time: str = None,
+                               page_size: int = 100) -> list:
+        params = {
+            "productType": "USDT-FUTURES",
+            "pageSize": str(page_size),
+        }
         if start_time:
             params["startTime"] = start_time
         if end_time:
             params["endTime"] = end_time
-        data = await self.get("/api/mix/v1/account/accountBill", params)
-        return data.get("data", {}).get("result", [])
+        resp = await self.get("/api/v2/mix/account/bill", params)
+        data = resp.get("data")
+        if isinstance(data, dict):
+            return data.get("resultList") or data.get("result") or []
+        return data or []
 
-    async def get_history_positions(self, symbol: str, margin_coin: str = "USDT", page_size: int = 50) -> list:
-        data = await self.get("/api/mix/v1/position/history-position", {
+    async def get_history_positions(self, symbol: str, margin_coin: str = "USDT",
+                                    page_size: int = 50) -> list:
+        """V2: data is { list: [...], endId: '...' }"""
+        params = {
+            "productType": "USDT-FUTURES",
+            "limit": str(page_size),
+        }
+        if symbol:
+            params["symbol"] = symbol
+        resp = await self.get("/api/v2/mix/position/history-position", params)
+        data = resp.get("data")
+        if isinstance(data, dict):
+            return data.get("list") or []
+        return data or []
+
+    # --- Orders (V2) ---
+
+    async def place_order(self, symbol: str, margin_coin: str, size: str,
+                          side: str, order_type: str = "market") -> dict:
+        """
+        Translates V1 side strings to V2 side + tradeSide:
+          open_long  -> buy  / open
+          open_short -> sell / open
+          close_long -> sell / close
+          close_short-> buy  / close
+        """
+        v1_to_v2 = {
+            "open_long":   ("buy",  "open"),
+            "open_short":  ("sell", "open"),
+            "close_long":  ("sell", "close"),
+            "close_short": ("buy",  "close"),
+        }
+        v2_side, trade_side = v1_to_v2.get(side, (side, "open"))
+        return await self.post("/api/v2/mix/order/place-order", {
             "symbol": symbol,
-            "marginCoin": margin_coin,
-            "pageSize": str(page_size),
-        })
-        return data.get("data", {}).get("list", [])
-
-    # --- Orders ---
-
-    async def place_order(self, symbol: str, margin_coin: str, size: str, side: str, order_type: str = "market") -> dict:
-        return await self.post("/api/mix/v1/order/placeOrder", {
-            "symbol": symbol,
+            "productType": "USDT-FUTURES",
+            "marginMode": "isolated",
             "marginCoin": margin_coin,
             "size": size,
-            "side": side,
+            "side": v2_side,
+            "tradeSide": trade_side,
             "orderType": order_type,
-            "timeInForceValue": "normal",
+            "force": "gtc",
         })
 
     async def place_plan(self, symbol: str, margin_coin: str, size: str, side: str,
-                          trigger_price: str, plan_type: str) -> dict:
-        return await self.post("/api/mix/v1/plan/placePlan", {
+                         trigger_price: str, plan_type: str) -> dict:
+        """V2 TP/SL order via place-tpsl-order."""
+        v1_to_v2 = {
+            "open_long":   ("buy",  "open"),
+            "open_short":  ("sell", "open"),
+            "close_long":  ("sell", "close"),
+            "close_short": ("buy",  "close"),
+        }
+        v2_side, trade_side = v1_to_v2.get(side, (side, "close"))
+        pt = "profit" if plan_type == "profit_plan" else "loss"
+        return await self.post("/api/v2/mix/order/place-tpsl-order", {
             "symbol": symbol,
+            "productType": "USDT-FUTURES",
             "marginCoin": margin_coin,
-            "size": size,
-            "side": side,
+            "planType": pt,
             "triggerPrice": trigger_price,
             "triggerType": "fill_price",
             "executePrice": "0",
-            "planType": plan_type,
+            "size": size,
+            "side": v2_side,
+            "tradeSide": trade_side,
             "orderType": "market",
         })
 
     async def close(self):
         await self.client.aclose()
+
 
 bitget = BitgetClient()
