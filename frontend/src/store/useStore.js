@@ -14,7 +14,7 @@ export const useStore = create((set, get) => ({
   lossCount: 0,
   totalPnl: 0,
   config: {
-    symbol: 'BTCUSDT_UMCBL',
+    symbol: 'BTCUSDT',          // V2: no _UMCBL suffix
     leverage: '10',
     mode: 'MANUAL',
     manual_margin: 10,
@@ -86,6 +86,12 @@ export const useStore = create((set, get) => ({
     try {
       const res = await axios.get(`${API}/api/market/contracts`)
       set({ contracts: res.data.data || [] })
+      // Auto-select first contract if default not found
+      const { config, contracts: c } = get()
+      const found = (res.data.data || []).find(x => x.symbol === config.symbol)
+      if (!found && res.data.data?.length > 0) {
+        set(state => ({ config: { ...state.config, symbol: res.data.data[0].symbol } }))
+      }
     } catch {}
   },
 
@@ -121,10 +127,11 @@ export const useStore = create((set, get) => ({
       set({ trades })
       const dailyMap = {}
       trades.forEach(t => {
-        if (!t.ctime) return
-        const d = new Date(Number(t.ctime))
+        const ts = t.ctime || t.uTime || t.createTime
+        if (!ts) return
+        const d = new Date(Number(ts))
         const key = `${d.getMonth()+1}/${d.getDate()}`
-        dailyMap[key] = (dailyMap[key] || 0) + parseFloat(t.achievedProfits || 0)
+        dailyMap[key] = (dailyMap[key] || 0) + parseFloat(t.achievedProfits || t.realizedPL || 0)
       })
       const pnlHistory = Object.entries(dailyMap).slice(-14).map(([date, pnl]) => ({ date, pnl: parseFloat(pnl.toFixed(4)), cumulative: 0 }))
       let cum = 0
