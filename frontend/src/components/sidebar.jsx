@@ -34,7 +34,7 @@ export default function Sidebar() {
   const { activeTab, setActiveTab, botStatus } = useStore()
 
   return (
-    <aside className="w-48 bg-surface border-r border-border flex flex-col shrink-0">
+    <aside className="w-48 bg-surface border-r border-border flex flex-col shrink-0 h-full">
       <nav className="flex flex-col gap-0.5 p-2 mt-1">
         {nav.map(item => (
           <button
