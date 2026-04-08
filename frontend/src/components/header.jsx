@@ -4,6 +4,14 @@ import { useStore } from '../store/useStore'
 export default function Header() {
   const { botStatus, wsConnected, ticker, config } = useStore()
 
+  // V2 uses lastPr, fallback to last for compat
+  const lastPrice = parseFloat(ticker?.lastPr || ticker?.last || 0)
+  const priceChange = parseFloat(ticker?.change24h || ticker?.priceChangePercent || 0)
+  const changeColor = priceChange >= 0 ? 'text-green-bright' : 'text-red-bright'
+
+  // Clean symbol display: remove _UMCBL if present
+  const displaySymbol = config.symbol.replace('_UMCBL', '').replace('USDT', '/USDT')
+
   return (
     <header className="flex items-center justify-between px-3 sm:px-6 py-2.5 sm:py-3 border-b border-border bg-surface sticky top-0 z-50">
       <div className="flex items-center gap-2 sm:gap-4">
@@ -21,18 +29,24 @@ export default function Header() {
 
         <div className="flex items-center gap-1.5 sm:gap-2">
           <span className="font-mono text-[10px] sm:text-[11px] text-text-faint">
-            {config.symbol.replace('_UMCBL','')}
+            {displaySymbol}
           </span>
-          {ticker && (
+          {lastPrice > 0 ? (
             <span className="font-mono text-[11px] sm:text-[12px] text-text font-medium">
-              {parseFloat(ticker.last || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {lastPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          ) : (
+            <span className="font-mono text-[11px] text-muted">—</span>
+          )}
+          {priceChange !== 0 && (
+            <span className={`font-mono text-[10px] ${changeColor} hidden sm:inline`}>
+              {priceChange >= 0 ? '+' : ''}{(priceChange * 100).toFixed(2)}%
             </span>
           )}
         </div>
       </div>
 
       <div className="flex items-center gap-2 sm:gap-4">
-        {/* WS status — hidden on very small screens */}
         <div className="hidden sm:flex items-center gap-2">
           <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-bright' : 'bg-muted'}`}
                style={wsConnected ? { animation: 'pulse-dot 2s infinite' } : {}} />
@@ -49,12 +63,10 @@ export default function Header() {
           {botStatus === 'RUNNING' && (
             <div className="w-1.5 h-1.5 rounded-full bg-green-bright" style={{ animation: 'pulse-dot 2s infinite' }} />
           )}
-          {/* Show dot only on mobile, full text on sm+ */}
           <span className="hidden sm:inline">{botStatus}</span>
           <span className="sm:hidden">{botStatus === 'RUNNING' ? 'LIVE' : 'IDLE'}</span>
         </div>
 
-        {/* WS dot — mobile only */}
         <div className={`sm:hidden w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-bright' : 'bg-muted'}`}
              style={wsConnected ? { animation: 'pulse-dot 2s infinite' } : {}} />
       </div>
