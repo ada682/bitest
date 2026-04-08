@@ -11,12 +11,12 @@ export default function BotControl() {
   }
 
   return (
-    <div className="panel p-5">
+    <div className="panel p-4 sm:p-5 max-w-lg mx-auto lg:max-w-none">
       <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-4">Bot Configuration</div>
 
-      <div className="grid grid-cols-2 gap-3 mb-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
         {/* Symbol */}
-        <div className="col-span-2">
+        <div className="sm:col-span-2">
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Symbol</label>
           <select
             value={config.symbol}
@@ -60,7 +60,7 @@ export default function BotControl() {
           </div>
         </div>
 
-        {/* Manual margin - only shown in MANUAL mode */}
+        {/* Manual margin */}
         {config.mode === 'MANUAL' && (
           <div>
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Margin (USDT)</label>
@@ -103,10 +103,10 @@ export default function BotControl() {
         </div>
       </div>
 
-      {/* Start / Stop button */}
+      {/* Start / Stop */}
       <button
         onClick={handleStart}
-        className={`w-full py-2.5 rounded font-display font-semibold text-sm tracking-wide transition-all ${
+        className={`w-full py-3 rounded font-display font-semibold text-sm tracking-wide transition-all ${
           isRunning
             ? 'bg-red-dim border border-red-dim text-red-bright hover:bg-red/20'
             : 'bg-accent hover:bg-accent-dim text-white'
@@ -115,7 +115,6 @@ export default function BotControl() {
         {isRunning ? 'Stop Bot' : 'Start Bot'}
       </button>
 
-      {/* Status */}
       {statusMessage && (
         <div className="mt-3 p-2.5 bg-panel rounded border border-border">
           <p className="text-[11px] font-mono text-text-faint">{statusMessage}</p>
