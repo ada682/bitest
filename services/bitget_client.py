@@ -5,7 +5,6 @@ import time
 import json
 import httpx
 import os
-from typing import Optional
 
 BITGET_BASE_URL = "https://api.bitget.com"
 
@@ -50,22 +49,48 @@ class BitgetClient:
     # --- Market (V2) ---
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> list:
-        """V2: productType uses 'USDT-FUTURES' instead of 'umcbl'"""
+        """V2 tickers endpoint — returns all symbols with price info."""
         resp = await self.get("/api/v2/mix/market/tickers", {"productType": product_type})
-        return resp.get("data") or []
+        raw = resp.get("data") or []
+        # Normalize to match what frontend expects
+        result = []
+        for c in raw:
+            sym = c.get("symbol", "")
+            result.append({
+                "symbol": sym,
+                "baseCoin": sym.replace("USDT", ""),
+                "quoteCoin": "USDT",
+                "lastPrice": c.get("lastPr", "0"),
+                "volume24h": c.get("usdtVolume", "0"),
+                "minTradeNum": c.get("minTradeNum", "1"),
+                "volumePlace": c.get("volumePlace", "3"),
+                "pricePlace": c.get("pricePlace", "2"),
+                "maxLeverage": c.get("maxLeverage", "125"),
+            })
+        return result
 
     async def get_ticker(self, symbol: str) -> dict:
-        """V2 ticker. Returns single dict."""
+        """V2 ticker. V2 uses 'lastPr' — we add 'last' alias for compat."""
         resp = await self.get("/api/v2/mix/market/ticker", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
         })
         data = resp.get("data")
         if isinstance(data, list) and data:
-            return data[0]
-        return data or {}
+            t = data[0]
+        elif isinstance(data, dict):
+            t = data
+        else:
+            return {}
+        # Add V1-compatible aliases so frontend doesn't break
+        t["last"] = t.get("lastPr", "0")
+        t["bestAsk"] = t.get("askPr", "0")
+        t["bestBid"] = t.get("bidPr", "0")
+        t["priceChangePercent"] = t.get("change24h", "0")
+        return t
 
     async def get_candles(self, symbol: str, granularity: str, limit: int = 100) -> list:
+        """V2 candles. Format: [ts, open, high, low, close, baseVol, quoteVol]"""
         resp = await self.get("/api/v2/mix/market/candles", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -116,10 +141,7 @@ class BitgetClient:
     async def get_account_bill(self, symbol: str, margin_coin: str = "USDT",
                                start_time: str = None, end_time: str = None,
                                page_size: int = 100) -> list:
-        params = {
-            "productType": "USDT-FUTURES",
-            "pageSize": str(page_size),
-        }
+        params = {"productType": "USDT-FUTURES", "pageSize": str(page_size)}
         if start_time:
             params["startTime"] = start_time
         if end_time:
@@ -132,11 +154,8 @@ class BitgetClient:
 
     async def get_history_positions(self, symbol: str, margin_coin: str = "USDT",
                                     page_size: int = 50) -> list:
-        """V2: data is { list: [...], endId: '...' }"""
-        params = {
-            "productType": "USDT-FUTURES",
-            "limit": str(page_size),
-        }
+        """V2: data = { list: [...], endId: '...' }"""
+        params = {"productType": "USDT-FUTURES", "limit": str(page_size)}
         if symbol:
             params["symbol"] = symbol
         resp = await self.get("/api/v2/mix/position/history-position", params)
@@ -149,13 +168,6 @@ class BitgetClient:
 
     async def place_order(self, symbol: str, margin_coin: str, size: str,
                           side: str, order_type: str = "market") -> dict:
-        """
-        Translates V1 side strings to V2 side + tradeSide:
-          open_long  -> buy  / open
-          open_short -> sell / open
-          close_long -> sell / close
-          close_short-> buy  / close
-        """
         v1_to_v2 = {
             "open_long":   ("buy",  "open"),
             "open_short":  ("sell", "open"),
@@ -177,7 +189,6 @@ class BitgetClient:
 
     async def place_plan(self, symbol: str, margin_coin: str, size: str, side: str,
                          trigger_price: str, plan_type: str) -> dict:
-        """V2 TP/SL order via place-tpsl-order."""
         v1_to_v2 = {
             "open_long":   ("buy",  "open"),
             "open_short":  ("sell", "open"),
