@@ -195,38 +195,36 @@ class BotEngine:
         try:
             print(f"🔧 EXECUTING TRADE: {direction} on {symbol}")
             
-            # FIRST: Set position mode to one_way_mode (unilateral)
-            print(f"⚙️ Setting position mode to one_way_mode...")
-            mode_resp = await bitget.set_position_mode(symbol, margin_coin)
-            print(f"📦 Position mode response: {mode_resp}")
-            
-            await asyncio.sleep(0.5)
-            
-            # Set leverage for the specific side
             lev = float(leverage)
-            print(f"⚙️ Setting leverage to {lev}x for {direction.lower()}...")
-            
-            if direction == "LONG":
-                await bitget.set_leverage(symbol, leverage, margin_coin, "long")
-            else:
-                await bitget.set_leverage(symbol, leverage, margin_coin, "short")
-            
-            await asyncio.sleep(0.5)
-
-            # Get account balance
-            account = await bitget.get_futures_account(symbol, margin_coin)
-            print(f"💰 Account: {account}")
-            
-            balance = float(account.get("available", 0))
-            if balance <= 0:
-                balance = float(account.get("equity", 0)) * 0.9
-            
-            # Get current price
             price = float(decision.get("entry", 0))
             if price == 0:
                 ticker = await bitget.get_ticker(symbol)
                 price = float(ticker.get("lastPr", ticker.get("last", 0)))
+                print(f"💰 Using live price: {price}")
+            
+            # Set position mode to one_way_mode
+            print(f"⚙️ Setting position mode to one_way_mode...")
+            mode_resp = await bitget.set_position_mode(symbol, margin_coin)
+            print(f"📦 Position mode response: {mode_resp}")
+            await asyncio.sleep(0.5)
+            
+            # Set leverage for both sides (required for crossed margin)
+            print(f"⚙️ Setting leverage to {lev}x for long...")
+            await bitget.set_leverage(symbol, leverage, margin_coin, "long")
+            await asyncio.sleep(0.3)
+            
+            print(f"⚙️ Setting leverage to {lev}x for short...")
+            await bitget.set_leverage(symbol, leverage, margin_coin, "short")
+            await asyncio.sleep(0.5)
 
+            # Get account balance
+            account = await bitget.get_futures_account(symbol, margin_coin)
+            print(f"💰 Account balance: {account.get('available', 'N/A')}")
+            
+            balance = float(account.get("available", 0))
+            if balance <= 0:
+                balance = float(account.get("accountEquity", 0)) * 0.9
+            
             print(f"💰 Balance: {balance}, Leverage: {lev}, Price: {price}")
 
             if balance <= 0 or price <= 0:
@@ -268,10 +266,12 @@ class BotEngine:
 
             # Set TP/SL
             print(f"🎯 Setting TP: {tp_price}")
-            await bitget.place_plan(symbol, margin_coin, size, side_close, tp_price, "profit_plan")
+            tp_resp = await bitget.place_tpsl(symbol, margin_coin, size, side_close, tp_price, "profit")
+            print(f"📦 TP response: {tp_resp}")
             
             print(f"🛑 Setting SL: {sl_price}")
-            await bitget.place_plan(symbol, margin_coin, size, side_close, sl_price, "loss_plan")
+            sl_resp = await bitget.place_tpsl(symbol, margin_coin, size, side_close, sl_price, "loss")
+            print(f"📦 SL response: {sl_resp}")
 
             self.state["open_position"] = {
                 "symbol": symbol,
