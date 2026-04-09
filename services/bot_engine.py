@@ -126,10 +126,11 @@ class BotEngine:
                 await asyncio.sleep(10)
                 return
 
-            # 2. Generate chart image
-            print("📈 Generating chart image...")
-            chart_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
-            print(f"✅ Chart generated: {chart_b64 is not None}")
+            # 2. Generate chart images (1m + 3m)
+            print("📈 Generating chart images...")
+            chart_1m_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
+            chart_3m_b64 = generate_chart_image(candles_3m, symbol.replace("USDT", "/USDT"), "3m")
+            print(f"✅ Charts generated: 1m={chart_1m_b64 is not None}, 3m={chart_3m_b64 is not None}")
 
             # 3. Compute indicators
             print("📐 Computing indicators...")
@@ -141,7 +142,8 @@ class BotEngine:
             print("🤖 Sending to AI for analysis...")
             self._emit("status", "Analyzing with DeepSeek AI...")
         
-            decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_b64)
+            chart_images = [img for img in [chart_1m_b64, chart_3m_b64] if img]
+            decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_images)
         
             print(f"✅ AI Response: decision={decision.get('decision')}, confidence={decision.get('confidence')}")
 
