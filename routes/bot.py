@@ -142,25 +142,15 @@ async def test_ai_raw(request: Request):
     indicators = compute_all(candles)
     ohlcv_text = format_ohlcv_text(candles, 30)
     
-    # Call AI with modified analyze that returns raw text
-    # Kita perlu akses raw response langsung
+    # Initialize session
     await deepseek_ai._ensure_session()
     
     # Upload chart
     file_id = await deepseek_ai.upload_image(chart_b64) if chart_b64 else None
     ref_file_ids = [file_id] if file_id else []
     
-    # Build prompt
-    prompt = f"""You are a crypto trading AI. Analyze this data and respond with ONLY a valid JSON object.
-
-Current Price: {indicators.get('current_price', 'N/A')}
-EMA9: {indicators.get('ema9_last', 'N/A')}
-EMA21: {indicators.get('ema21_last', 'N/A')}
-RSI: {indicators.get('rsi_last', 'N/A')}
-Trend: {indicators.get('trend', 'N/A')}
-
-Response format (ONLY JSON, no other text):
-{{"decision": "BUY or SELL or NO TRADE", "entry": {indicators.get('current_price', 0)}, "tp": {indicators.get('current_price', 0) * 1.004}, "sl": {indicators.get('current_price', 0) * 0.996}, "confidence": 0-100, "reason": "short reason"}}"""
+    # Simple prompt for testing
+    prompt = "Say: Hello World. Respond with JSON: {\"test\": \"ok\"}"
     
     # Get POW
     pow_token = await deepseek_ai._do_pow("/api/v0/chat/completion")
@@ -182,44 +172,52 @@ Response format (ONLY JSON, no other text):
         "model_type": "default",
     }
     
-    full_text = ""
-    response_message_id = None
+    print(f"🤖 Sending request to DeepSeek...")
+    print(f"   Session: {deepseek_ai._chat_session_id}")
+    print(f"   Headers: {list(comp_headers.keys())}")
     
-    async with deepseek_ai.client.stream(
-        "POST",
-        "/api/v0/chat/completion",
-        headers=comp_headers,
-        json=payload,
-    ) as resp:
-        last_event = ""
-        async for line in resp.aiter_lines():
-            if not line:
-                continue
-            if line.startswith("event: "):
-                last_event = line[7:]
-                continue
-            if not line.startswith("data: "):
-                continue
-            content = line[6:]
-            try:
-                jdata = json.loads(content)
-            except Exception:
-                continue
+    full_response = ""
+    all_lines = []
+    
+    try:
+        async with deepseek_ai.client.stream(
+            "POST",
+            "/api/v0/chat/completion",
+            headers=comp_headers,
+            json=payload,
+            timeout=httpx.Timeout(30.0),
+        ) as resp:
+            print(f"📡 Status: {resp.status_code}")
+            print(f"📡 Headers: {dict(resp.headers)}")
             
-            if last_event == "ready":
-                response_message_id = jdata.get("response_message_id")
-            elif "p" in jdata and jdata["p"] == "response/fragments/-1/content":
-                full_text += jdata.get("v", "")
-            elif "v" in jdata:
-                v = jdata["v"]
-                if isinstance(v, str):
-                    full_text += v
+            if resp.status_code != 200:
+                error_text = await resp.aread()
+                return {
+                    "error": f"HTTP {resp.status_code}",
+                    "response": error_text.decode()[:1000]
+                }
+            
+            # Read all lines
+            async for line in resp.aiter_lines():
+                all_lines.append(line)
+                if line:
+                    print(f"📨 Raw line: {line[:200]}")
+                    full_response += line + "\n"
+                    
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e), "traceback": traceback.format_exc()}
     
     return {
         "symbol": symbol,
         "current_price": indicators.get('current_price'),
-        "raw_response": full_text,
-        "response_length": len(full_text),
+        "status_code": 200,
+        "total_lines": len(all_lines),
+        "raw_lines": all_lines[:20],  # First 20 lines
+        "full_response": full_response[:2000],  # First 2000 chars
+        "response_length": len(full_response),
     }
 
 import asyncio
