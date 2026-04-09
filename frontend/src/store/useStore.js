@@ -58,9 +58,45 @@ export const useStore = create((set, get) => ({
         else if (event === 'position_open') set({ openPosition: data })
         else if (event === 'position_close') {
           set(state => ({ openPosition: null, tradeCount: state.tradeCount + 1, totalPnl: state.totalPnl + (data.pnl || 0) }))
+          get().fetchTrades()
           get().fetchSummary()
         }
+        else if (event === 'position_update') {
+          set(state => ({
+            openPosition: state.openPosition
+              ? { ...state.openPosition, unrealized_pnl: data.unrealized_pnl, mark_price: data.mark_price }
+              : state.openPosition,
+            futuresBalance: { ...state.futuresBalance, unrealizedPL: String(data.unrealized_pnl) }
+          }))
+        }
         else if (event === 'error') set({ lastError: data })
+        // --- Reset events from backend ---
+        else if (event === 'reset_ui' || event === 'reset_all') {
+          set({
+            tradeCount: 0,
+            winCount: 0,
+            lossCount: 0,
+            totalPnl: 0,
+            trades: [],
+            pnlHistory: [],
+            lastSignal: null,
+            openPosition: null,
+            lastError: null,
+            statusMessage: '',
+            summary: null,
+          })
+          if (event === 'reset_all') {
+            ws.close()
+            setTimeout(() => get().initWs(), 500)
+          }
+        }
+        else if (event === 'clear_trades') {
+          set({ trades: [], pnlHistory: [] })
+        }
+        else if (event === 'reconnect_ws') {
+          ws.close()
+          setTimeout(() => get().initWs(), 1000)
+        }
       } catch {}
     }
     set({ ws })
@@ -124,26 +160,26 @@ export const useStore = create((set, get) => ({
   },
 
   fetchSummary: async () => {
-    const { config } = get()
     try {
-      const res = await axios.get(`${API}/api/history/summary/${config.symbol}`)
+      const res = await axios.get(`${API}/api/history/summary/all`)
       set({ summary: res.data.data })
     } catch {}
   },
 
   fetchTrades: async () => {
-    const { config } = get()
     try {
-      const res = await axios.get(`${API}/api/history/positions/${config.symbol}`, { params: { page_size: 50 } })
+      const res = await axios.get(`${API}/api/history/positions/all`, { params: { page_size: 100 } })
       const trades = res.data.data || []
       set({ trades })
+      // Build daily PnL chart — use correct field names from Bitget V2
       const dailyMap = {}
       trades.forEach(t => {
         const ts = t.ctime || t.uTime || t.createTime
         if (!ts) return
         const d = new Date(Number(ts))
         const key = `${d.getMonth()+1}/${d.getDate()}`
-        dailyMap[key] = (dailyMap[key] || 0) + parseFloat(t.achievedProfits || t.realizedPL || 0)
+        const pnl = parseFloat(t.pnl ?? t.netProfit ?? t.achievedProfits ?? 0)
+        dailyMap[key] = (dailyMap[key] || 0) + pnl
       })
       const pnlHistory = Object.entries(dailyMap).slice(-14).map(([date, pnl]) => ({ date, pnl: parseFloat(pnl.toFixed(4)), cumulative: 0 }))
       let cum = 0
