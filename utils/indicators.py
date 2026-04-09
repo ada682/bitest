@@ -128,15 +128,23 @@ def format_ohlcv_text(candles: list, limit: int = 50) -> str:
 
 def calculate_position_size(balance: float, leverage: float, price: float,
                               mode: str = "ALL_IN", manual_margin: float = None,
-                              volume_place: int = 3) -> str:
+                              volume_place: int = 3,
+                              safety_factor: float = 0.95) -> str:
     """
     Calculate order size.
     mode: ALL_IN or MANUAL
+    safety_factor: fraction of balance to use (default 0.95 = 95%) to reserve
+                   room for fees and avoid 'exceeds balance' errors.
+    For MANUAL mode, if manual_margin > available balance it is capped at
+    balance * safety_factor so the order never exceeds what the account holds.
     """
     if mode == "MANUAL" and manual_margin is not None:
-        margin = manual_margin
+        # Cap manual margin so it never exceeds available balance
+        max_margin = balance * safety_factor
+        margin = min(float(manual_margin), max_margin)
     else:
-        margin = balance
+        # ALL_IN: use most of the balance but keep a fee buffer
+        margin = balance * safety_factor
 
     notional = margin * leverage
     size = notional / price
