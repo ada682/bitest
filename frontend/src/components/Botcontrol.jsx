@@ -1,21 +1,108 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { useStore } from '../store/useStore'
 
+// --- PIN Modal ---
+function PinModal({ onConfirm, onCancel, action }) {
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!pin) return
+
+    setLoading(true)
+    setError('')
+
+    try {
+      const res = await fetch('/api/bot/verify-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      })
+      const data = await res.json()
+
+      if (data.ok) {
+        onConfirm()
+      } else {
+        setError('Wrong PIN. Try again.')
+        setPin('')
+        inputRef.current?.focus()
+      }
+    } catch {
+      setError('Failed to verify PIN.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-surface border border-border rounded-lg p-6 w-full max-w-xs shadow-2xl">
+        <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-4">
+          Confirm {action}
+        </div>
+        <form onSubmit={handleSubmit}>
+          <input
+            ref={inputRef}
+            type="password"
+            placeholder="Enter PIN..."
+            value={pin}
+            onChange={e => setPin(e.target.value)}
+            className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent mb-3 tracking-widest text-center"
+            maxLength={32}
+          />
+          {error && (
+            <div className="mb-3 text-[11px] font-mono text-red-bright text-center">{error}</div>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex-1 py-2 rounded border border-border text-[11px] font-mono text-muted hover:text-text transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !pin}
+              className="flex-1 py-2 rounded bg-accent text-white text-[11px] font-mono font-semibold hover:bg-accent-dim transition-colors disabled:opacity-50"
+            >
+              {loading ? '...' : 'Confirm'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// --- Main Component ---
 export default function BotControl() {
   const { botStatus, config, setConfig, startBot, stopBot, statusMessage, lastError, contracts } = useStore()
   const [searchTerm, setSearchTerm] = useState('')
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [showPinModal, setShowPinModal] = useState(false)
   const dropdownRef = useRef(null)
-  
+
   const isRunning = botStatus === 'RUNNING'
 
-  const handleStart = async () => {
+  // Ask for PIN first, then execute
+  const handleStart = () => setShowPinModal(true)
+
+  const handlePinConfirmed = async () => {
+    setShowPinModal(false)
     if (isRunning) await stopBot()
     else await startBot()
   }
 
   const cleanSymbol = (sym) => sym?.replace('_UMCBL', '').replace('USDT', '/USDT')
-  
+
   // Filter contracts
   const filteredContracts = contracts.filter(c => {
     const symbol = cleanSymbol(c.symbol).toLowerCase()
@@ -37,13 +124,21 @@ export default function BotControl() {
 
   return (
     <div className="panel p-4 sm:p-5 max-w-lg mx-auto lg:max-w-none">
+      {showPinModal && (
+        <PinModal
+          action={isRunning ? 'Stop Bot' : 'Start Bot'}
+          onConfirm={handlePinConfirmed}
+          onCancel={() => setShowPinModal(false)}
+        />
+      )}
+
       <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-4">Bot Configuration</div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
         {/* Symbol dengan custom dropdown */}
         <div className="sm:col-span-2" ref={dropdownRef}>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Symbol</label>
-          
+
           {/* Search input */}
           <input
             type="text"
@@ -57,7 +152,7 @@ export default function BotControl() {
             className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent mb-2"
             disabled={isRunning}
           />
-          
+
           {/* Custom dropdown button */}
           <button
             type="button"
@@ -68,7 +163,7 @@ export default function BotControl() {
             <span>{selectedDisplay || 'Select pair...'}</span>
             <span className={`transform transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}>▼</span>
           </button>
-          
+
           {/* Dropdown list */}
           {isDropdownOpen && !isRunning && (
             <div className="absolute z-50 mt-1 w-full max-h-60 overflow-auto bg-surface border border-border rounded shadow-lg">
@@ -82,7 +177,6 @@ export default function BotControl() {
                     <button
                       key={c.symbol}
                       onClick={() => {
-                        console.log('✅ Selected:', c.symbol)
                         setConfig({ symbol: c.symbol })
                         setIsDropdownOpen(false)
                         setSearchTerm('')
@@ -98,7 +192,7 @@ export default function BotControl() {
               )}
             </div>
           )}
-          
+
           <div className="text-[9px] font-mono text-muted mt-1">
             {filteredContracts.length} of {contracts.length} pairs
           </div>
