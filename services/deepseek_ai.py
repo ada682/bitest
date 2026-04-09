@@ -21,12 +21,12 @@ DEEPSEEK_BASE = "https://chat.deepseek.com"
 # Headers ala Android + Chinese locale (mirip wrapper yang lancar)
 BASE_HEADERS = {
     "Host": "chat.deepseek.com",
-    "User-Agent": "DeepSeek/1.0.13 Android/35",
+    "User-Agent": "DeepSeek/1.1.0 Android/35",  # Updated version
     "Accept": "application/json",
     "Accept-Encoding": "identity",
     "Content-Type": "application/json",
     "x-client-platform": "android",
-    "x-client-version": "1.3.0-auto-resume",
+    "x-client-version": "1.1.0",  # Updated from 1.3.0-auto-resume
     "x-client-locale": "zh_CN",
     "accept-charset": "UTF-8",
     "referer": "https://chat.deepseek.com/",
