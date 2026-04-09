@@ -7,13 +7,14 @@ import BotControl from './components/Botcontrol'
 import TradeHistory from './components/Tradehistory'
 
 export default function App() {
-  const { activeTab, initWs, fetchBotState, fetchContracts, fetchTicker, fetchCandles, fetchTrades, fetchFuturesBalance } = useStore()
+  const { activeTab, initWs, fetchBotState, fetchContracts, fetchTicker, fetchCandles, fetchTrades, fetchSummary, fetchFuturesBalance } = useStore()
 
   useEffect(() => {
     initWs()
     fetchBotState()
     fetchContracts()
     fetchTrades()
+    fetchSummary()
     fetchFuturesBalance()
     const interval = setInterval(() => {
       fetchTicker()
