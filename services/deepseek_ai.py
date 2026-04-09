@@ -1,5 +1,5 @@
 """
-DeepSeek AI integration - Using headers from working inspect element
+DeepSeek AI integration - Full working version with upload_image
 """
 
 import asyncio
@@ -122,14 +122,17 @@ class DeepSeekAI:
             data = resp.json()
             
             if data.get("code") != 0:
+                print(f"⚠️ PoW error: {data.get('msg')}")
                 return ""
             
             challenge = data.get("data", {}).get("biz_data", {}).get("challenge")
             if not challenge or not self.solver:
                 return ""
 
+            print(f"🔐 Solving PoW for {target_path}...")
             answer = self.solver.solve(challenge)
             if answer is None:
+                print("❌ Failed to solve PoW")
                 return ""
             
             pow_dict = {
@@ -140,7 +143,9 @@ class DeepSeekAI:
                 "signature": challenge["signature"],
                 "target_path": target_path,
             }
-            return base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
+            pow_token = base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
+            print(f"✅ PoW solved: {answer}")
+            return pow_token
         except Exception as e:
             print(f"❌ PoW error: {e}")
             return ""
@@ -171,16 +176,97 @@ class DeepSeekAI:
             else:
                 raise Exception("No session ID")
 
+    async def upload_image(self, image_base64: str, filename: str = "image.png") -> Optional[str]:
+        """Upload base64 image to DeepSeek, return file_id."""
+        if not image_base64:
+            return None
+        
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            print(f"📸 Image size: {len(image_bytes)} bytes")
+        except Exception as e:
+            print(f"❌ Failed to decode: {e}")
+            return None
+
+        pow_token = await self._do_pow("/api/v0/file/upload_file")
+
+        upload_headers = {k: v for k, v in self.headers.items() if k != "Content-Type"}
+        upload_headers["x-ds-pow-response"] = pow_token
+        upload_headers["x-file-size"] = str(len(image_bytes))
+
+        files = {"file": (filename, image_bytes, "image/png")}
+        
+        try:
+            resp = await self.client.post(
+                "/api/v0/file/upload_file",
+                headers=upload_headers,
+                files=files,
+            )
+            data = resp.json()
+            
+            if data.get("code") != 0:
+                print(f"❌ Upload failed: {data.get('msg')}")
+                return None
+                
+            file_id = data.get("data", {}).get("biz_data", {}).get("id")
+            if not file_id:
+                return None
+                
+            print(f"📤 File uploaded: {file_id}")
+            
+            # Poll until SUCCESS
+            for attempt in range(30):
+                await asyncio.sleep(1)
+                poll_resp = await self.client.get(
+                    "/api/v0/file/fetch_files",
+                    params={"file_ids": file_id},
+                    headers=self.headers,
+                )
+                poll_data = poll_resp.json()
+                files_data = poll_data.get("data", {}).get("biz_data", {}).get("files", [])
+                
+                if files_data:
+                    status = files_data[0].get("status")
+                    print(f"  Poll {attempt+1}: {status}")
+                    
+                    if status == "SUCCESS":
+                        print(f"✅ File ready!")
+                        return file_id
+                    elif status in ("FAILED", "ERROR"):
+                        return None
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Upload error: {e}")
+            return None
+
     async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str = None) -> dict:
         await self._ensure_session()
 
+        # Upload chart image (optional)
         ref_file_ids = []
         if chart_image_b64:
-            # Upload image if needed
-            pass
+            print("📤 Uploading chart image...")
+            file_id = await self.upload_image(chart_image_b64)
+            if file_id:
+                ref_file_ids = [file_id]
+                print(f"✅ Chart uploaded: {file_id}")
+            else:
+                print("⚠️ Chart upload failed, continuing without image")
 
-        prompt = f"""Current price: {indicators.get('current_price', 0)}
-Respond with JSON: {{"decision": "BUY or SELL or NO TRADE", "confidence": 0-100}}"""
+        # Build prompt
+        current_price = indicators.get('current_price', 0)
+        
+        prompt = f"""Current price: {current_price}
+EMA9: {indicators.get('ema9_last', 'N/A')}
+EMA21: {indicators.get('ema21_last', 'N/A')}
+RSI: {indicators.get('rsi_last', 'N/A')}
+
+OHLCV Data:
+{ohlcv_text}
+
+Respond with JSON: {{"decision": "BUY" or "SELL" or "NO TRADE", "confidence": 0-100, "reason": "brief"}}"""
 
         pow_token = await self._do_pow("/api/v0/chat/completion")
 
@@ -199,7 +285,8 @@ Respond with JSON: {{"decision": "BUY or SELL or NO TRADE", "confidence": 0-100}
             "preempt": False,
         }
 
-        print(f"🤖 Sending request...")
+        print(f"🤖 Sending request to DeepSeek...")
+        print(f"   Session: {self._chat_session_id}")
         
         full_text = ""
 
@@ -210,34 +297,48 @@ Respond with JSON: {{"decision": "BUY or SELL or NO TRADE", "confidence": 0-100}
                 headers=comp_headers,
                 json=payload,
             ) as resp:
-                print(f"📡 Status: {resp.status_code}")
+                print(f"📡 Response status: {resp.status_code}")
+                
+                if resp.status_code != 200:
+                    error_text = await resp.aread()
+                    print(f"❌ Error: {error_text.decode()[:500]}")
+                    return {"decision": "NO TRADE", "reason": f"HTTP {resp.status_code}"}
                 
                 async for line in resp.aiter_lines():
-                    if line and line.startswith("data: "):
+                    if not line:
+                        continue
+                    
+                    # Print raw line for debugging
+                    if line.startswith("data: "):
                         content = line[6:]
                         try:
                             jdata = json.loads(content)
                             if "v" in jdata and isinstance(jdata["v"], str):
                                 full_text += jdata["v"]
-                                print(f"📝 {jdata['v']}", end="")
+                                print(jdata["v"], end="", flush=True)
                         except:
                             pass
 
-            print(f"\n✅ Response: {full_text[:200]}")
+            print(f"\n\n📝 Full response received")
             
             # Parse JSON
             try:
                 start = full_text.find("{")
                 end = full_text.rfind("}") + 1
-                if start >= 0:
-                    return json.loads(full_text[start:end])
-            except:
-                pass
+                if start >= 0 and end > start:
+                    result = json.loads(full_text[start:end])
+                    print(f"✅ Parsed: {result}")
+                    return result
+            except Exception as e:
+                print(f"❌ Parse error: {e}")
+                print(f"Raw: {full_text[:200]}")
 
-            return {"decision": "NO TRADE", "confidence": 0}
+            return {"decision": "NO TRADE", "confidence": 0, "reason": "No valid JSON"}
             
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"❌ Chat error: {e}")
+            import traceback
+            traceback.print_exc()
             return {"decision": "NO TRADE", "reason": str(e)}
 
     async def close(self):
