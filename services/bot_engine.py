@@ -44,12 +44,18 @@ class BotEngine:
                 pass
 
     async def start(self, config: dict):
+        print("🔥 BOT START called")  # Log langsung ke stdout
         if self.running:
             return {"ok": False, "reason": "Bot already running"}
+    
         self.config = config
         self.running = True
         self.state["status"] = "RUNNING"
+    
+        print(f"✅ Bot set to RUNNING, creating task...")
         self._task = asyncio.create_task(self._loop())
+        print(f"✅ Task created: {self._task}")
+    
         return {"ok": True}
 
     async def stop(self):
@@ -65,20 +71,31 @@ class BotEngine:
         await deepseek_ai.close()
 
     async def _loop(self):
+        print("🚀 BOT LOOP STARTED - this should appear in logs!")
         logger.info("Bot loop started")
+    
+    # Tunggu sebentar sebelum mulai
+        await asyncio.sleep(2)
+    
         while self.running:
             try:
+                print("🔄 Bot cycle beginning...")
                 await self._cycle()
+                print("⏸ Cycle finished, waiting 5 seconds...")
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
+                print("❌ Bot loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"Bot loop error: {e}")
+                print(f"💥 Bot loop error: {e}")
+                import traceback
+                traceback.print_exc()
                 self.state["last_error"] = str(e)
                 self._emit("error", str(e))
                 await asyncio.sleep(5)
-
+    
+        print("🛑 Bot loop ended")
         self.state["status"] = "IDLE"
-        logger.info("Bot loop stopped")
 
     async def _cycle(self):
         cfg = self.config
