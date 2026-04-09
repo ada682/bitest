@@ -24,8 +24,12 @@ export default function TradeHistory() {
               </thead>
               <tbody>
                 {trades.map((t, i) => {
-                  const pnl = parseFloat(t.achievedProfits || 0)
+                  const pnl = parseFloat(t.pnl ?? t.achievedProfits ?? 0)
+                  const netProfit = parseFloat(t.netProfit ?? 0)
                   const isWin = pnl > 0
+                  const openPrice = parseFloat(t.openAvgPrice ?? t.averageOpenPrice ?? 0)
+                  const closePrice = parseFloat(t.closeAvgPrice ?? t.averageClosePrice ?? 0)
+                  const size = t.openTotalPos ?? t.closeTotalPos ?? t.openDealCount ?? '—'
                   return (
                     <tr key={i} className="border-b border-border/50 hover:bg-panel/60 transition-colors">
                       <td className="px-3 py-2">
@@ -38,20 +42,25 @@ export default function TradeHistory() {
                       <td className="px-3 py-2 text-[11px] font-mono text-text-faint whitespace-nowrap">
                         {t.symbol?.replace('_UMCBL', '')}
                       </td>
-                      <td className="px-3 py-2 text-[11px] font-mono text-text-faint">{t.openDealCount || '—'}</td>
+                      <td className="px-3 py-2 text-[11px] font-mono text-text-faint">{size}</td>
                       <td className="px-3 py-2 text-[11px] font-mono text-text-faint whitespace-nowrap">
-                        {parseFloat(t.averageOpenPrice || 0).toFixed(2)}
+                        {openPrice > 0 ? openPrice.toFixed(2) : '—'}
                       </td>
                       <td className="px-3 py-2 text-[11px] font-mono text-text-faint whitespace-nowrap">
-                        {parseFloat(t.averageClosePrice || 0).toFixed(2)}
+                        {closePrice > 0 ? closePrice.toFixed(2) : '—'}
                       </td>
                       <td className="px-3 py-2">
                         <span className={`text-[11px] font-mono font-medium ${isWin ? 'text-green-bright' : 'text-red-bright'}`}>
                           {pnl >= 0 ? '+' : ''}{pnl.toFixed(4)}
+                          {netProfit !== 0 && (
+                            <span className="text-[9px] text-muted ml-1">
+                              ({netProfit >= 0 ? '+' : ''}{netProfit.toFixed(4)} net)
+                            </span>
+                          )}
                         </span>
                       </td>
                       <td className="px-3 py-2 text-[10px] font-mono text-muted whitespace-nowrap">
-                        {t.ctime ? new Date(Number(t.ctime)).toLocaleDateString() : '—'}
+                        {t.ctime ? new Date(Number(t.ctime)).toLocaleString() : '—'}
                       </td>
                     </tr>
                   )
