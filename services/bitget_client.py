@@ -197,10 +197,11 @@ class BitgetClient:
             return data.get("list") or []
         return data or []
 
-    # --- Orders (V2) ---
+    # --- Orders (V2) for Crossed Margin ---
 
     async def place_order(self, symbol: str, margin_coin: str, size: str,
                           side: str, order_type: str = "market") -> dict:
+        """Place order for crossed margin with one_way_mode"""
         symbol = self._clean_symbol(symbol)
         v1_to_v2 = {
             "open_long":   ("buy",  "open"),
@@ -212,17 +213,19 @@ class BitgetClient:
         return await self.post("/api/v2/mix/order/place-order", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
-            "marginMode": "isolated",
+            "marginMode": "crossed",
             "marginCoin": margin_coin,
             "size": size,
             "side": v2_side,
             "tradeSide": trade_side,
             "orderType": order_type,
             "force": "gtc",
+            "posMode": "one_way_mode",
         })
 
-    async def place_plan(self, symbol: str, margin_coin: str, size: str, side: str,
-                         trigger_price: str, plan_type: str) -> dict:
+    async def place_tpsl(self, symbol: str, margin_coin: str, size: str, 
+                         side: str, trigger_price: str, plan_type: str) -> dict:
+        """Place TP/SL for crossed margin"""
         symbol = self._clean_symbol(symbol)
         v1_to_v2 = {
             "open_long":   ("buy",  "open"),
@@ -231,10 +234,11 @@ class BitgetClient:
             "close_short": ("buy",  "close"),
         }
         v2_side, trade_side = v1_to_v2.get(side, (side, "close"))
-        pt = "profit" if plan_type == "profit_plan" else "loss"
+        pt = "profit" if plan_type == "profit" else "loss"
         return await self.post("/api/v2/mix/order/place-tpsl-order", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
+            "marginMode": "crossed",
             "marginCoin": margin_coin,
             "planType": pt,
             "triggerPrice": trigger_price,
@@ -244,6 +248,7 @@ class BitgetClient:
             "side": v2_side,
             "tradeSide": trade_side,
             "orderType": "market",
+            "posMode": "one_way_mode",
         })
 
     async def close(self):
