@@ -256,15 +256,15 @@ Trend: {trend}
 {ohlcv_text}
 
 === RULES ===
-- LONG if: price above EMA21 AND RSI > 50 AND uptrend
-- SHORT if: price below EMA21 AND RSI < 50 AND downtrend
-- NO TRADE otherwise
-- Minimum confidence: 70
+- LONG 
+- SHORT 
+- SCALP TRADE OR DIE
+- Minimum confidence: 65
 
 === OUTPUT ===
 Respond ONLY with JSON. No markdown, no explanation:
 
-{{"decision": "LONG" or "SHORT" or "NO TRADE", "entry": {current_price}, "tp_long": {tp_long}, "sl_long": {sl_long}, "tp_short": {tp_short}, "sl_short": {sl_short}, "confidence": 0-100, "reason": "one sentence"}}"""
+{{"decision": "LONG" or "SHORT", "entry": {current_price}, "tp_long": {tp_long}, "sl_long": {sl_long}, "tp_short": {tp_short}, "sl_short": {sl_short}, "confidence": 0-100, "reason": "one sentence"}}"""
 
         pow_token = await self._do_pow("/api/v0/chat/completion")
 
