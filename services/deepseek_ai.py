@@ -128,15 +128,45 @@ class DeepSeekAI:
     async def _ensure_session(self):
         """Create or ensure chat session exists."""
         if not self._chat_session_id:
+            print(f"🔐 Creating DeepSeek session with token: {self.token[:20]}...")
+        
             resp = await self.client.post(
                 "/api/v0/chat_session/create",
                 headers=self.headers,
                 json={},
             )
-            data = resp.json()
-            self._chat_session_id = data.get("data", {}).get("biz_data", {}).get("id")
+        
+            print(f"📦 Session create response status: {resp.status_code}")
+        
+                try:
+                data = resp.json()
+                print(f"📄 Response body: {json.dumps(data, indent=2)[:500]}")
+            except Exception as e:
+                print(f"❌ Failed to parse response: {e}")
+                print(f"Raw response: {resp.text[:500]}")
+                raise
+        
+        # Cek apakah ada error
+            if data.get("code") != 0:
+                error_msg = data.get("msg", "Unknown error")
+                print(f"❌ DeepSeek API error: {error_msg}")
+                if "unauthorized" in error_msg.lower() or "token" in error_msg.lower():
+                    print("⚠️ Token invalid or expired! Please refresh your DeepSeek token.")
+                raise Exception(f"DeepSeek API error: {error_msg}")
+        
+            biz_data = data.get("data", {}).get("biz_data", {})
+            if biz_data is None:
+                print(f"❌ biz_data is None. Full response: {data}")
+                raise Exception("Failed to create session: biz_data is None")
+         
+            self._chat_session_id = biz_data.get("id")
             self._parent_message_id = None
-            print(f"✅ Created DeepSeek session: {self._chat_session_id}")
+        
+            if self._chat_session_id:
+                print(f"✅ Created DeepSeek session: {self._chat_session_id}")
+            else:
+                print(f"❌ No session ID in response: {biz_data}")
+                raise Exception("No session ID returned from DeepSeek")
 
     async def upload_image(self, image_base64: str, filename: str = "chart.png") -> Optional[str]:
         """Upload base64 image to DeepSeek, return file_id."""
