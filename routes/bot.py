@@ -60,5 +60,35 @@ async def debug_status(request: Request):
         "state": engine.state,
     }
 
+@router.get("/test-ai-direct")
+async def test_ai_direct(request: Request):
+    """Test AI langsung tanpa bot loop"""
+    from services.bitget_client import bitget
+    from services.deepseek_ai import deepseek_ai
+    from utils.indicators import compute_all, format_ohlcv_text
+    
+    symbol = "ENJUSDT"
+    
+    # Fetch data
+    candles = await bitget.get_candles(symbol, "1m", 50)
+    if not candles:
+        return {"error": "No candles"}
+    
+    # Generate chart (skip for speed)
+    chart_b64 = None
+    
+    # Compute indicators
+    indicators = compute_all(candles)
+    ohlcv_text = format_ohlcv_text(candles, 30)
+    
+    # Call AI
+    result = await deepseek_ai.analyze(ohlcv_text, indicators, chart_b64)
+    
+    return {
+        "symbol": symbol,
+        "current_price": indicators.get('current_price'),
+        "ai_result": result,
+        "raw_indicators": indicators
+    }
 
 import asyncio
