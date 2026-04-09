@@ -20,10 +20,7 @@ class BitgetClient:
         """Remove _UMCBL suffix and ensure clean symbol for Bitget API"""
         if not symbol:
             return symbol
-        # Remove _UMCBL suffix if present
         cleaned = symbol.replace('_UMCBL', '')
-        # Also remove any other common suffixes
-        cleaned = cleaned.replace('_UMCBL', '')
         return cleaned
 
     def _sign(self, timestamp: str, method: str, path: str, body: str = "") -> str:
@@ -59,10 +56,8 @@ class BitgetClient:
     # --- Market (V2) ---
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> list:
-        """V2 tickers endpoint — returns all symbols with price info."""
         resp = await self.get("/api/v2/mix/market/tickers", {"productType": product_type})
         raw = resp.get("data") or []
-        # Normalize to match what frontend expects
         result = []
         for c in raw:
             sym = c.get("symbol", "")
@@ -80,7 +75,7 @@ class BitgetClient:
         return result
 
     async def get_ticker(self, symbol: str) -> dict:
-        """V2 ticker. V2 uses 'lastPr' — we add 'last' alias for compat."""
+        symbol = self._clean_symbol(symbol)
         resp = await self.get("/api/v2/mix/market/ticker", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -92,7 +87,6 @@ class BitgetClient:
             t = data
         else:
             return {}
-        # Add V1-compatible aliases so frontend doesn't break
         t["last"] = t.get("lastPr", "0")
         t["bestAsk"] = t.get("askPr", "0")
         t["bestBid"] = t.get("bidPr", "0")
@@ -100,46 +94,33 @@ class BitgetClient:
         return t
 
     async def get_candles(self, symbol: str, granularity: str, limit: int = 100) -> list:
-        """V2 candles. Format: [ts, open, high, low, close, baseVol, quoteVol]"""
         symbol = self._clean_symbol(symbol)
-    
-        print(f"🔍 Fetching candles for {symbol} with granularity {granularity}")
-    
         resp = await self.get("/api/v2/mix/market/candles", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
             "granularity": granularity,
             "limit": str(limit),
         })
-    
-        print(f"📦 Response code: {resp.get('code')}")
-    
         data = resp.get("data")
         if data and isinstance(data, list):
-            print(f"✅ Raw data length: {len(data)}")
-            if len(data) > 0:
-                print(f"📊 Sample candle: {data[0]}")
-        
             cleaned_data = []
             for candle in data:
                 if isinstance(candle, list) and len(candle) >= 7:
                     cleaned_candle = [
-                        int(candle[0]),      # timestamp
-                        float(candle[1]),    # open
-                        float(candle[2]),    # high
-                        float(candle[3]),    # low
-                        float(candle[4]),    # close
-                        float(candle[5]),    # base volume
-                        float(candle[6]),    # quote volume
+                        int(candle[0]),
+                        float(candle[1]),
+                        float(candle[2]),
+                        float(candle[3]),
+                        float(candle[4]),
+                        float(candle[5]),
+                        float(candle[6]),
                     ]
                     cleaned_data.append(cleaned_candle)
-            print(f"✅ Cleaned data length: {len(cleaned_data)}")
             return cleaned_data
-    
-        print(f"❌ No data or invalid format: {type(data)}")
         return data or []
 
     async def get_symbol_leverage(self, symbol: str) -> dict:
+        symbol = self._clean_symbol(symbol)
         resp = await self.get("/api/v2/mix/market/symbol-leverage", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -148,8 +129,8 @@ class BitgetClient:
 
     # --- Account (V2) ---
 
-    async def get_futures_account(self, symbol: str = "BTCUSDT", margin_coin: str = "USDT") -> dict:
-        """Get futures account balance for a specific symbol."""
+    async def get_futures_account(self, symbol: str, margin_coin: str = "USDT") -> dict:
+        symbol = self._clean_symbol(symbol)
         resp = await self.get("/api/v2/mix/account/account", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -158,13 +139,13 @@ class BitgetClient:
         return resp.get("data") or {}
 
     async def get_all_futures_accounts(self) -> list:
-        """Get all futures account balances across all margin coins."""
         resp = await self.get("/api/v2/mix/account/accounts", {
             "productType": "USDT-FUTURES",
         })
         return resp.get("data") or []
 
     async def set_leverage(self, symbol: str, leverage: str, margin_coin: str = "USDT", hold_side: str = "long") -> dict:
+        symbol = self._clean_symbol(symbol)
         return await self.post("/api/v2/mix/account/set-leverage", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -174,8 +155,11 @@ class BitgetClient:
         })
 
     async def set_position_mode(self, symbol: str, margin_coin: str = "USDT") -> dict:
+        """Set position mode to one_way_mode (unilateral)"""
+        symbol = self._clean_symbol(symbol)
         return await self.post("/api/v2/mix/account/set-position-mode", {
             "productType": "USDT-FUTURES",
+            "marginCoin": margin_coin,
             "posMode": "one_way_mode",
         })
 
@@ -189,6 +173,7 @@ class BitgetClient:
     async def get_account_bill(self, symbol: str, margin_coin: str = "USDT",
                                start_time: str = None, end_time: str = None,
                                page_size: int = 100) -> list:
+        symbol = self._clean_symbol(symbol)
         params = {"productType": "USDT-FUTURES", "pageSize": str(page_size)}
         if start_time:
             params["startTime"] = start_time
@@ -202,7 +187,7 @@ class BitgetClient:
 
     async def get_history_positions(self, symbol: str, margin_coin: str = "USDT",
                                     page_size: int = 50) -> list:
-        """V2: data = { list: [...], endId: '...' }"""
+        symbol = self._clean_symbol(symbol)
         params = {"productType": "USDT-FUTURES", "limit": str(page_size)}
         if symbol:
             params["symbol"] = symbol
@@ -216,6 +201,7 @@ class BitgetClient:
 
     async def place_order(self, symbol: str, margin_coin: str, size: str,
                           side: str, order_type: str = "market") -> dict:
+        symbol = self._clean_symbol(symbol)
         v1_to_v2 = {
             "open_long":   ("buy",  "open"),
             "open_short":  ("sell", "open"),
@@ -237,6 +223,7 @@ class BitgetClient:
 
     async def place_plan(self, symbol: str, margin_coin: str, size: str, side: str,
                          trigger_price: str, plan_type: str) -> dict:
+        symbol = self._clean_symbol(symbol)
         v1_to_v2 = {
             "open_long":   ("buy",  "open"),
             "open_short":  ("sell", "open"),
