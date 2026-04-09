@@ -220,64 +220,50 @@ async def test_ai_raw(request: Request):
         "response_length": len(full_response),
     }
 
+import asyncio
+import time
+
+
 @router.get("/reset-ui")
 async def reset_ui(request: Request):
-    """
-    Reset UI state: 
-    - Kirim event ke WebSocket untuk reset recent trades, total trades
-    - Reset bot state (tidak menghentikan bot, hanya reset counter)
-    """
+    """Reset UI counters and broadcast to all WS clients (bot keeps running)."""
     engine = request.app.state.bot_engine
-    
-    # Reset counters di bot engine
+
     engine.state["trade_count"] = 0
     engine.state["win_count"] = 0
     engine.state["loss_count"] = 0
     engine.state["total_pnl"] = 0.0
     engine.state["last_signal"] = None
     engine.state["open_position"] = None
-    
-    # Kirim event reset ke semua WebSocket clients
+
     await ws_manager.broadcast("reset_ui", {
         "trade_count": 0,
         "win_count": 0,
         "loss_count": 0,
         "total_pnl": 0.0,
-        "trades": [],  # Kosongkan recent trades
-        "pnl_history": [],  # Kosongkan chart history
+        "trades": [],
+        "pnl_history": [],
     })
-    
-    return {
-        "ok": True,
-        "message": "UI has been reset. Trade counters and recent trades cleared."
-    }
+
+    return {"ok": True, "message": "UI counters reset. Bot is still running."}
 
 
 @router.get("/reset-ws")
 async def reset_ws(request: Request):
-    """
-    Reset WebSocket connection - force reconnect semua clients
-    """
-    # Kirim event untuk reconnect
+    """Force all WebSocket clients to reconnect."""
     await ws_manager.broadcast("reconnect_ws", {
         "reason": "manual_reset",
-        "timestamp": int(time.time() * 1000)
+        "timestamp": int(time.time() * 1000),
     })
-    
-    return {
-        "ok": True,
-        "message": "WebSocket reset signal sent. Clients will reconnect."
-    }
+
+    return {"ok": True, "message": "Reconnect signal sent to all WS clients."}
 
 
 @router.get("/reset-all")
 async def reset_all(request: Request):
-    """
-    Reset semua: UI state + WebSocket + Bot counters
-    """
+    """Full reset: counters + UI state + force WS reconnect."""
     engine = request.app.state.bot_engine
-    
-    # Reset bot state
+
     engine.state["trade_count"] = 0
     engine.state["win_count"] = 0
     engine.state["loss_count"] = 0
@@ -285,9 +271,7 @@ async def reset_all(request: Request):
     engine.state["last_signal"] = None
     engine.state["open_position"] = None
     engine.state["last_error"] = None
-    engine.state["status_message"] = ""
-    
-    # Kirim event reset lengkap
+
     await ws_manager.broadcast("reset_all", {
         "trade_count": 0,
         "win_count": 0,
@@ -297,32 +281,21 @@ async def reset_all(request: Request):
         "pnl_history": [],
         "last_signal": None,
         "open_position": None,
-        "timestamp": int(time.time() * 1000)
+        "timestamp": int(time.time() * 1000),
     })
-    
-    # Kirim juga event reconnect
+
     await ws_manager.broadcast("reconnect_ws", {"reason": "full_reset"})
-    
-    return {
-        "ok": True,
-        "message": "Complete reset executed. All counters cleared and WebSocket reconnecting."
-    }
+
+    return {"ok": True, "message": "Full reset done. Counters cleared, WS clients reconnecting."}
 
 
 @router.get("/clear-trades")
 async def clear_trades(request: Request):
-    """
-    Hanya clear recent trades (tanpa reset counters)
-    """
+    """Clear recent trades list from UI only (counters unchanged)."""
     await ws_manager.broadcast("clear_trades", {
         "trades": [],
         "pnl_history": [],
-        "timestamp": int(time.time() * 1000)
+        "timestamp": int(time.time() * 1000),
     })
-    
-    return {
-        "ok": True,
-        "message": "Recent trades cleared from UI."
-    }
 
-import asyncio
+    return {"ok": True, "message": "Recent trades cleared from UI."}
