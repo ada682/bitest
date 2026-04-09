@@ -126,11 +126,10 @@ class BotEngine:
                 await asyncio.sleep(10)
                 return
 
-            # 2. Generate chart images (1m + 3m)
-            print("📈 Generating chart images...")
-            chart_1m_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
-            chart_3m_b64 = generate_chart_image(candles_3m, symbol.replace("USDT", "/USDT"), "3m")
-            print(f"✅ Charts generated: 1m={chart_1m_b64 is not None}, 3m={chart_3m_b64 is not None}")
+            # 2. Generate chart image
+            print("📈 Generating chart image...")
+            chart_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
+            print(f"✅ Chart generated: {chart_b64 is not None}")
 
             # 3. Compute indicators
             print("📐 Computing indicators...")
@@ -142,8 +141,7 @@ class BotEngine:
             print("🤖 Sending to AI for analysis...")
             self._emit("status", "Analyzing with DeepSeek AI...")
         
-            chart_images = [img for img in [chart_1m_b64, chart_3m_b64] if img]
-            decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_images)
+            decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_b64)
         
             print(f"✅ AI Response: decision={decision.get('decision')}, confidence={decision.get('confidence')}")
 
@@ -296,7 +294,7 @@ class BotEngine:
             self._emit("error", f"Trade error: {str(e)}")
 
     async def _monitor_position(self, symbol: str):
-        """Poll position until closed."""
+        """Poll position until closed, emitting real unrealized PnL each tick."""
         self._emit("status", "Monitoring open position...")
         max_wait = 300
         start = time.time()
@@ -305,13 +303,27 @@ class BotEngine:
             await asyncio.sleep(3)
             try:
                 positions = await bitget.get_positions()
-                open_pos = [p for p in positions if p.get("symbol") == symbol and float(p.get("total", 0)) > 0]
+                open_pos = [
+                    p for p in positions
+                    if p.get("symbol") == symbol and float(p.get("total", 0)) > 0
+                ]
 
                 if not open_pos:
                     self.state["open_position"] = None
                     self._emit("position_close", {"symbol": symbol, "pnl": 0})
                     print(f"✅ Position closed")
                     return
+
+                # Emit real unrealized PnL from Bitget (field: unrealizedPL)
+                pos = open_pos[0]
+                unrealized_pnl = float(pos.get("unrealizedPL", 0))
+                mark_price = float(pos.get("markPrice", 0))
+                self._emit("position_update", {
+                    "symbol": symbol,
+                    "unrealized_pnl": unrealized_pnl,
+                    "mark_price": mark_price,
+                })
+
             except Exception as e:
                 logger.error(f"Monitor error: {e}")
 
