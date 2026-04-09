@@ -1,9 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { useStore } from '../store/useStore'
 
 export default function BotControl() {
   const { botStatus, config, setConfig, startBot, stopBot, statusMessage, lastError, contracts } = useStore()
   const [searchTerm, setSearchTerm] = useState('')
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const dropdownRef = useRef(null)
   
   const isRunning = botStatus === 'RUNNING'
 
@@ -12,54 +14,93 @@ export default function BotControl() {
     else await startBot()
   }
 
-  const cleanSymbol = (sym) => sym?.replace('_UMCBL', '') || sym
+  const cleanSymbol = (sym) => sym?.replace('_UMCBL', '').replace('USDT', '/USDT')
+  
+  // Filter contracts
+  const filteredContracts = contracts.filter(c => {
+    const symbol = cleanSymbol(c.symbol).toLowerCase()
+    return symbol.includes(searchTerm.toLowerCase())
+  })
 
-  // Filter contracts berdasarkan search
-  const filteredContracts = contracts.filter(c => 
-    c.symbol.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const selectedDisplay = cleanSymbol(config.symbol)
 
   return (
     <div className="panel p-4 sm:p-5 max-w-lg mx-auto lg:max-w-none">
       <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-4">Bot Configuration</div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-        {/* Symbol dengan search */}
-        <div className="sm:col-span-2">
+        {/* Symbol dengan custom dropdown */}
+        <div className="sm:col-span-2" ref={dropdownRef}>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Symbol</label>
           
           {/* Search input */}
           <input
             type="text"
-            placeholder="🔍 Search pair (e.g., BTC, ETH, SOL)..."
+            placeholder="🔍 Search pair (e.g., BTC, ETH, ENJ, SOL)..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => {
+              setSearchTerm(e.target.value)
+              setIsDropdownOpen(true)
+            }}
+            onFocus={() => setIsDropdownOpen(true)}
             className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent mb-2"
             disabled={isRunning}
           />
           
-          {/* Dropdown dengan scroll */}
-          <select
-            value={config.symbol}
-            onChange={e => setConfig({ symbol: e.target.value })}
+          {/* Custom dropdown button */}
+          <button
+            type="button"
+            onClick={() => !isRunning && setIsDropdownOpen(!isDropdownOpen)}
             disabled={isRunning}
-            size={8}
-            className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent disabled:opacity-50"
+            className="w-full bg-panel border border-border rounded px-3 py-2 text-sm font-mono text-text flex justify-between items-center hover:border-accent transition-colors"
           >
-            {filteredContracts.length === 0 ? (
-              <option value="" disabled>No pairs found</option>
-            ) : (
-              filteredContracts.map(c => (
-                <option key={c.symbol} value={c.symbol}>
-                  {cleanSymbol(c.symbol)}
-                </option>
-              ))
-            )}
-          </select>
+            <span>{selectedDisplay || 'Select pair...'}</span>
+            <span className={`transform transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}>▼</span>
+          </button>
           
-          {/* Info jumlah pair */}
+          {/* Dropdown list */}
+          {isDropdownOpen && !isRunning && (
+            <div className="absolute z-50 mt-1 w-full max-h-60 overflow-auto bg-surface border border-border rounded shadow-lg">
+              {filteredContracts.length === 0 ? (
+                <div className="px-3 py-2 text-muted text-sm">No pairs found</div>
+              ) : (
+                filteredContracts.map(c => {
+                  const displaySymbol = cleanSymbol(c.symbol)
+                  const isSelected = config.symbol === c.symbol
+                  return (
+                    <button
+                      key={c.symbol}
+                      onClick={() => {
+                        console.log('✅ Selected:', c.symbol)
+                        setConfig({ symbol: c.symbol })
+                        setIsDropdownOpen(false)
+                        setSearchTerm('')
+                      }}
+                      className={`w-full text-left px-3 py-2 text-sm font-mono hover:bg-panel transition-colors ${
+                        isSelected ? 'bg-accent/20 text-accent' : 'text-text'
+                      }`}
+                    >
+                      {displaySymbol}
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          )}
+          
           <div className="text-[9px] font-mono text-muted mt-1">
-            Showing {filteredContracts.length} of {contracts.length} pairs
+            {filteredContracts.length} of {contracts.length} pairs
           </div>
         </div>
 
