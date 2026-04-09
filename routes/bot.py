@@ -120,4 +120,106 @@ async def test_ai_direct(request: Request):
         "ai_result": result,
     }
 
+@router.get("/test-ai-raw")
+async def test_ai_raw(request: Request):
+    """Test AI dan tampilkan raw response tanpa parsing"""
+    from services.bitget_client import bitget
+    from services.deepseek_ai import deepseek_ai
+    from utils.indicators import compute_all, format_ohlcv_text
+    from services.chart_generator import generate_chart_image
+    
+    symbol = "ENJUSDT"
+    
+    # Fetch data
+    candles = await bitget.get_candles(symbol, "1m", 50)
+    if not candles or len(candles) < 30:
+        return {"error": f"Not enough candles: {len(candles) if candles else 0}"}
+    
+    # Generate chart
+    chart_b64 = generate_chart_image(candles, symbol.replace("USDT", "/USDT"), "1m")
+    
+    # Compute indicators
+    indicators = compute_all(candles)
+    ohlcv_text = format_ohlcv_text(candles, 30)
+    
+    # Call AI with modified analyze that returns raw text
+    # Kita perlu akses raw response langsung
+    await deepseek_ai._ensure_session()
+    
+    # Upload chart
+    file_id = await deepseek_ai.upload_image(chart_b64) if chart_b64 else None
+    ref_file_ids = [file_id] if file_id else []
+    
+    # Build prompt
+    prompt = f"""You are a crypto trading AI. Analyze this data and respond with ONLY a valid JSON object.
+
+Current Price: {indicators.get('current_price', 'N/A')}
+EMA9: {indicators.get('ema9_last', 'N/A')}
+EMA21: {indicators.get('ema21_last', 'N/A')}
+RSI: {indicators.get('rsi_last', 'N/A')}
+Trend: {indicators.get('trend', 'N/A')}
+
+Response format (ONLY JSON, no other text):
+{{"decision": "BUY or SELL or NO TRADE", "entry": {indicators.get('current_price', 0)}, "tp": {indicators.get('current_price', 0) * 1.004}, "sl": {indicators.get('current_price', 0) * 0.996}, "confidence": 0-100, "reason": "short reason"}}"""
+    
+    # Get POW
+    pow_token = await deepseek_ai._do_pow("/api/v0/chat/completion")
+    
+    comp_headers = {
+        **deepseek_ai.headers,
+        "Content-Type": "application/json",
+        "x-ds-pow-response": pow_token,
+    }
+    
+    payload = {
+        "chat_session_id": deepseek_ai._chat_session_id,
+        "parent_message_id": deepseek_ai._parent_message_id,
+        "prompt": prompt,
+        "ref_file_ids": ref_file_ids,
+        "thinking_enabled": False,
+        "search_enabled": False,
+        "preempt": False,
+        "model_type": "default",
+    }
+    
+    full_text = ""
+    response_message_id = None
+    
+    async with deepseek_ai.client.stream(
+        "POST",
+        "/api/v0/chat/completion",
+        headers=comp_headers,
+        json=payload,
+    ) as resp:
+        last_event = ""
+        async for line in resp.aiter_lines():
+            if not line:
+                continue
+            if line.startswith("event: "):
+                last_event = line[7:]
+                continue
+            if not line.startswith("data: "):
+                continue
+            content = line[6:]
+            try:
+                jdata = json.loads(content)
+            except Exception:
+                continue
+            
+            if last_event == "ready":
+                response_message_id = jdata.get("response_message_id")
+            elif "p" in jdata and jdata["p"] == "response/fragments/-1/content":
+                full_text += jdata.get("v", "")
+            elif "v" in jdata:
+                v = jdata["v"]
+                if isinstance(v, str):
+                    full_text += v
+    
+    return {
+        "symbol": symbol,
+        "current_price": indicators.get('current_price'),
+        "raw_response": full_text,
+        "response_length": len(full_text),
+    }
+
 import asyncio
