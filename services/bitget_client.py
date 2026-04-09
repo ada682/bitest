@@ -201,15 +201,18 @@ class BitgetClient:
 
     async def place_order(self, symbol: str, margin_coin: str, size: str,
                           side: str, order_type: str = "market") -> dict:
-        """Place order for crossed margin with one_way_mode"""
+        """Place order for crossed margin with one-way-mode"""
         symbol = self._clean_symbol(symbol)
-        v1_to_v2 = {
-            "open_long":   ("buy",  "open"),
-            "open_short":  ("sell", "open"),
-            "close_long":  ("sell", "close"),
-            "close_short": ("buy",  "close"),
+    
+        side_map = {
+            "open_long": "buy",
+            "open_short": "sell",
+            "close_long": "sell",
+            "close_short": "buy",
         }
-        v2_side, trade_side = v1_to_v2.get(side, (side, "open"))
+    
+        v2_side = side_map.get(side, "buy")
+    
         return await self.post("/api/v2/mix/order/place-order", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -217,7 +220,6 @@ class BitgetClient:
             "marginCoin": margin_coin,
             "size": size,
             "side": v2_side,
-            "tradeSide": trade_side,
             "orderType": order_type,
             "force": "gtc",
             "posMode": "one_way_mode",
@@ -225,16 +227,19 @@ class BitgetClient:
 
     async def place_tpsl(self, symbol: str, margin_coin: str, size: str, 
                          side: str, trigger_price: str, plan_type: str) -> dict:
-        """Place TP/SL for crossed margin"""
+        """Place TP/SL for crossed margin with one-way-mode"""
         symbol = self._clean_symbol(symbol)
-        v1_to_v2 = {
-            "open_long":   ("buy",  "open"),
-            "open_short":  ("sell", "open"),
-            "close_long":  ("sell", "close"),
-            "close_short": ("buy",  "close"),
+    
+        side_map = {
+            "open_long": "buy",
+            "open_short": "sell",
+            "close_long": "sell",
+            "close_short": "buy",
         }
-        v2_side, trade_side = v1_to_v2.get(side, (side, "close"))
+    
+        v2_side = side_map.get(side, "buy")
         pt = "profit" if plan_type == "profit" else "loss"
+    
         return await self.post("/api/v2/mix/order/place-tpsl-order", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
@@ -246,7 +251,6 @@ class BitgetClient:
             "executePrice": "0",
             "size": size,
             "side": v2_side,
-            "tradeSide": trade_side,
             "orderType": "market",
             "posMode": "one_way_mode",
         })
