@@ -162,7 +162,7 @@ class BotEngine:
             trade_decision = decision.get("decision")
             confidence = decision.get("confidence", 0)
 
-            if trade_decision in ("BUY", "SELL") and confidence > 75:
+            if trade_decision in ("BUY", "SELL") and confidence > 60:
                 print(f"🎯 Executing {trade_decision} trade with {confidence}% confidence")
                 await self._execute_trade(
                     symbol, margin_coin, leverage, mode, manual_margin,
