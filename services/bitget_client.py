@@ -16,6 +16,16 @@ class BitgetClient:
         self.passphrase = os.getenv("BITGET_PASSPHRASE", "")
         self.client = httpx.AsyncClient(base_url=BITGET_BASE_URL, timeout=30)
 
+    def _clean_symbol(self, symbol: str) -> str:
+        """Remove _UMCBL suffix and ensure clean symbol for Bitget API"""
+        if not symbol:
+            return symbol
+        # Remove _UMCBL suffix if present
+        cleaned = symbol.replace('_UMCBL', '')
+        # Also remove any other common suffixes
+        cleaned = cleaned.replace('_UMCBL', '')
+        return cleaned
+
     def _sign(self, timestamp: str, method: str, path: str, body: str = "") -> str:
         message = timestamp + method.upper() + path + body
         mac = hmac.new(self.secret_key.encode(), message.encode(), hashlib.sha256)
