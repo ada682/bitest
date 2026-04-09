@@ -71,7 +71,7 @@ class BotEngine:
         await deepseek_ai.close()
 
     async def _loop(self):
-        print("🚀 BOT LOOP STARTED - this should appear in logs!")
+        print("🚀 BOT LOOP STARTED")
         logger.info("Bot loop started")
     
         await asyncio.sleep(2)
@@ -129,7 +129,7 @@ class BotEngine:
             # 2. Generate chart image
             print("📈 Generating chart image...")
             chart_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
-            print(f"✅ Chart generated: {chart_b64 is not None} (length: {len(chart_b64) if chart_b64 else 0})")
+            print(f"✅ Chart generated: {chart_b64 is not None}")
 
             # 3. Compute indicators
             print("📐 Computing indicators...")
@@ -161,7 +161,7 @@ class BotEngine:
             trade_decision = decision.get("decision")
             confidence = decision.get("confidence", 0)
 
-            print(f"📊 Checking trade conditions: decision={trade_decision}, confidence={confidence} (need >= 60)")
+            print(f"📊 Checking trade: decision={trade_decision}, confidence={confidence} (need >= 60)")
 
             # Check if there's already an open position
             if self.state["open_position"] is not None:
@@ -195,43 +195,45 @@ class BotEngine:
         try:
             print(f"🔧 EXECUTING TRADE: {direction} on {symbol}")
             
-            # Set position mode
-            await bitget.set_position_mode(symbol, margin_coin)
-
-            # Set leverage for both sides
-            await bitget.set_leverage(symbol, leverage, margin_coin, "long")
-            await bitget.set_leverage(symbol, leverage, margin_coin, "short")
+            # FIRST: Set position mode to one_way_mode (unilateral)
+            print(f"⚙️ Setting position mode to one_way_mode...")
+            mode_resp = await bitget.set_position_mode(symbol, margin_coin)
+            print(f"📦 Position mode response: {mode_resp}")
+            
+            await asyncio.sleep(0.5)
+            
+            # Set leverage for the specific side
+            lev = float(leverage)
+            print(f"⚙️ Setting leverage to {lev}x for {direction.lower()}...")
+            
+            if direction == "LONG":
+                await bitget.set_leverage(symbol, leverage, margin_coin, "long")
+            else:
+                await bitget.set_leverage(symbol, leverage, margin_coin, "short")
+            
+            await asyncio.sleep(0.5)
 
             # Get account balance
             account = await bitget.get_futures_account(symbol, margin_coin)
-            print(f"💰 Account response: {account}")
+            print(f"💰 Account: {account}")
             
-            # Try different possible field names for available balance
-            balance = 0
-            if "available" in account:
-                balance = float(account.get("available", 0))
-            elif "availableMargin" in account:
-                balance = float(account.get("availableMargin", 0))
-            elif "equity" in account:
-                balance = float(account.get("equity", 0)) * 0.9  # Use 90% of equity
+            balance = float(account.get("available", 0))
+            if balance <= 0:
+                balance = float(account.get("equity", 0)) * 0.9
             
-            lev = float(leverage)
-            
-            # Get current price if not in decision
+            # Get current price
             price = float(decision.get("entry", 0))
             if price == 0:
                 ticker = await bitget.get_ticker(symbol)
                 price = float(ticker.get("lastPr", ticker.get("last", 0)))
-                print(f"💰 Using live price: {price}")
 
             print(f"💰 Balance: {balance}, Leverage: {lev}, Price: {price}")
 
             if balance <= 0 or price <= 0:
                 self._emit("error", f"Cannot execute: balance={balance}, price={price}")
-                print(f"❌ Invalid balance or price: balance={balance}, price={price}")
                 return
 
-            # Determine size
+            # Calculate size
             volume_place = int(self.config.get("volume_place", 3))
             size = calculate_position_size(balance, lev, price, mode, manual_margin, volume_place)
             print(f"📊 Position size: {size}")
@@ -242,27 +244,21 @@ class BotEngine:
                 side_close = "close_long"
                 tp_price = str(round(price * (1 + tp_pct), 6))
                 sl_price = str(round(price * (1 - sl_pct), 6))
-            elif direction == "SHORT":
+            else:
                 side_open = "open_short"
                 side_close = "close_short"
                 tp_price = str(round(price * (1 - tp_pct), 6))
                 sl_price = str(round(price * (1 + sl_pct), 6))
-            else:
-                print(f"❌ Unknown direction: {direction}")
-                return
 
             print(f"📈 TP: {tp_price}, SL: {sl_price}")
 
             # Place main order
-            self._emit("status", f"Placing {direction} order, size={size}...")
+            self._emit("status", f"Placing {direction} order...")
             print(f"🚀 Placing order: {side_open}, size={size}")
             
             order_resp = await bitget.place_order(symbol, margin_coin, size, side_open)
             print(f"📦 Order response: {order_resp}")
-            
-            logger.info(f"Order response: {order_resp}")
 
-            # Check if order was successful
             if order_resp.get("code") != "00000":
                 print(f"❌ Order failed: {order_resp.get('msg')}")
                 self._emit("error", f"Order failed: {order_resp.get('msg')}")
@@ -270,15 +266,12 @@ class BotEngine:
 
             await asyncio.sleep(1)
 
-            # Set TP
+            # Set TP/SL
             print(f"🎯 Setting TP: {tp_price}")
-            tp_resp = await bitget.place_plan(symbol, margin_coin, size, side_close, tp_price, "profit_plan")
-            print(f"📦 TP response: {tp_resp}")
+            await bitget.place_plan(symbol, margin_coin, size, side_close, tp_price, "profit_plan")
             
-            # Set SL
             print(f"🛑 Setting SL: {sl_price}")
-            sl_resp = await bitget.place_plan(symbol, margin_coin, size, side_close, sl_price, "loss_plan")
-            print(f"📦 SL response: {sl_resp}")
+            await bitget.place_plan(symbol, margin_coin, size, side_close, sl_price, "loss_plan")
 
             self.state["open_position"] = {
                 "symbol": symbol,
@@ -303,7 +296,7 @@ class BotEngine:
     async def _monitor_position(self, symbol: str):
         """Poll position until closed."""
         self._emit("status", "Monitoring open position...")
-        max_wait = 300  # 5 min max
+        max_wait = 300
         start = time.time()
 
         while time.time() - start < max_wait and self.state["open_position"] is not None:
@@ -313,34 +306,18 @@ class BotEngine:
                 open_pos = [p for p in positions if p.get("symbol") == symbol and float(p.get("total", 0)) > 0]
 
                 if not open_pos:
-                    # Position closed
-                    pos_data = self.state.get("open_position", {})
-                    # Calculate PnL from closed position if available
-                    pnl = 0.0
-                    # Try to get actual PnL from position history
-                    for pos in positions:
-                        if pos.get("symbol") == symbol and float(pos.get("total", 0)) == 0:
-                            pnl = float(pos.get("unrealizedPL", 0))
-                            break
-                    
-                    self.state["total_pnl"] += pnl
-                    if pnl > 0:
-                        self.state["win_count"] += 1
-                    elif pnl < 0:
-                        self.state["loss_count"] += 1
-                    
                     self.state["open_position"] = None
-                    self._emit("position_close", {"symbol": symbol, "pnl": pnl})
-                    print(f"✅ Position closed! PnL: {pnl}")
+                    self._emit("position_close", {"symbol": symbol, "pnl": 0})
+                    print(f"✅ Position closed")
                     return
             except Exception as e:
                 logger.error(f"Monitor error: {e}")
-                print(f"⚠️ Monitor error: {e}")
 
-        # Force check after timeout
         if self.state["open_position"] is not None:
-            print(f"⚠️ Position monitor timeout, forcing close check")
             self.state["open_position"] = None
 
     def get_state(self) -> dict:
         return {**self.state}
+
+
+bot_engine = BotEngine()
