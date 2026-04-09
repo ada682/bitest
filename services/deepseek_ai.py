@@ -1,5 +1,5 @@
 """
-DeepSeek AI integration - No bias, pure technical analysis
+DeepSeek AI integration - Full debug version
 """
 
 import asyncio
@@ -114,6 +114,7 @@ class DeepSeekAI:
 
     async def _do_pow(self, target_path: str) -> str:
         try:
+            print(f"🔐 Requesting PoW for {target_path}...")
             resp = await self.client.post(
                 "/api/v0/chat/create_pow_challenge",
                 headers=self.headers,
@@ -122,14 +123,18 @@ class DeepSeekAI:
             data = resp.json()
             
             if data.get("code") != 0:
+                print(f"⚠️ PoW error: {data.get('msg')}")
                 return ""
             
             challenge = data.get("data", {}).get("biz_data", {}).get("challenge")
             if not challenge or not self.solver:
+                print("⚠️ No challenge or solver")
                 return ""
 
+            print(f"🔐 Solving PoW...")
             answer = self.solver.solve(challenge)
             if answer is None:
+                print("❌ Failed to solve")
                 return ""
             
             pow_dict = {
@@ -140,12 +145,16 @@ class DeepSeekAI:
                 "signature": challenge["signature"],
                 "target_path": target_path,
             }
-            return base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
-        except Exception:
+            pow_token = base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
+            print(f"✅ PoW solved: {answer}")
+            return pow_token
+        except Exception as e:
+            print(f"❌ PoW exception: {e}")
             return ""
 
     async def _ensure_session(self):
         if not self._chat_session_id:
+            print(f"🔐 Creating DeepSeek session...")
             resp = await self.client.post(
                 "/api/v0/chat_session/create",
                 headers=self.headers,
@@ -154,11 +163,12 @@ class DeepSeekAI:
             data = resp.json()
         
             if data.get("code") != 0:
-                raise Exception(f"DeepSeek API error: {data.get('msg')}")
+                raise Exception(f"Session error: {data.get('msg')}")
         
             biz_data = data.get("data", {}).get("biz_data", {})
             chat_session = biz_data.get("chat_session", {})
             self._chat_session_id = chat_session.get("id")
+            print(f"✅ Session: {self._chat_session_id}")
 
     async def upload_image(self, image_base64: str, filename: str = "image.png") -> Optional[str]:
         if not image_base64:
@@ -166,7 +176,9 @@ class DeepSeekAI:
         
         try:
             image_bytes = base64.b64decode(image_base64)
-        except Exception:
+            print(f"📸 Image size: {len(image_bytes)} bytes")
+        except Exception as e:
+            print(f"❌ Decode error: {e}")
             return None
 
         pow_token = await self._do_pow("/api/v0/file/upload_file")
@@ -186,14 +198,17 @@ class DeepSeekAI:
             data = resp.json()
             
             if data.get("code") != 0:
+                print(f"❌ Upload failed: {data.get('msg')}")
                 return None
                 
             file_id = data.get("data", {}).get("biz_data", {}).get("id")
             if not file_id:
+                print(f"❌ No file_id")
                 return None
             
-            # Poll until SUCCESS
-            for _ in range(30):
+            print(f"📤 File uploaded: {file_id}")
+            
+            for attempt in range(30):
                 await asyncio.sleep(1)
                 poll_resp = await self.client.get(
                     "/api/v0/file/fetch_files",
@@ -205,68 +220,62 @@ class DeepSeekAI:
                 
                 if files_data:
                     status = files_data[0].get("status")
+                    print(f"  Poll {attempt+1}: {status}")
+                    
                     if status == "SUCCESS":
+                        print(f"✅ File ready!")
                         return file_id
                     elif status in ("FAILED", "ERROR"):
+                        print(f"❌ File failed")
                         return None
             
             return None
             
-        except Exception:
+        except Exception as e:
+            print(f"❌ Upload exception: {e}")
             return None
 
     async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str = None) -> dict:
-        """
-        Analyze market data and return trading decision.
-        No bias - pure technical analysis based on indicators.
-        """
+        print(f"🔵 analyze() started")
+        
         await self._ensure_session()
 
-        # Upload chart image (optional)
         ref_file_ids = []
         if chart_image_b64:
+            print("📤 Uploading chart image...")
             file_id = await self.upload_image(chart_image_b64)
             if file_id:
                 ref_file_ids = [file_id]
+                print(f"✅ Chart uploaded: {file_id}")
 
-        # Extract indicators with defaults
         current_price = indicators.get('current_price', 0)
         ema9 = indicators.get('ema9_last', current_price)
         ema21 = indicators.get('ema21_last', current_price)
         rsi = indicators.get('rsi_last', 50)
         trend = indicators.get('trend', 'NEUTRAL')
         
-        # Calculate dynamic TP/SL based on ATR or fixed percentages
         tp_long = round(current_price * 1.004, 8)
         sl_long = round(current_price * 0.996, 8)
         tp_short = round(current_price * 0.996, 8)
         sl_short = round(current_price * 1.004, 8)
 
-        # Neutral prompt - let AI decide based on data only
-        prompt = f"""Analyze this crypto market data objectively. No bias.
+        prompt = f"""Analyze this crypto market data objectively.
 
-=== DATA ===
 Price: {current_price}
 EMA9: {ema9}
 EMA21: {ema21}
 RSI: {rsi}
 Trend: {trend}
 
-=== OHLCV ===
+OHLCV:
 {ohlcv_text}
 
-=== RULES ===
-- LONG 
-- SHORT 
-- SCALP TRADE OR DIE
-- Minimum confidence: 65
+Respond ONLY with JSON:
+{{"decision": "LONG" or "SHORT" or "NO TRADE", "confidence": 0-100, "reason": "one sentence"}}"""
 
-=== OUTPUT ===
-Respond ONLY with JSON. No markdown, no explanation:
-
-{{"decision": "LONG" or "SHORT", "entry": {current_price}, "tp_long": {tp_long}, "sl_long": {sl_long}, "tp_short": {tp_short}, "sl_short": {sl_short}, "confidence": 0-100, "reason": "one sentence"}}"""
-
+        print(f"🔵 Getting PoW for chat...")
         pow_token = await self._do_pow("/api/v0/chat/completion")
+        print(f"🔵 PoW token obtained: {pow_token[:50] if pow_token else 'EMPTY'}")
 
         comp_headers = {
             **self.headers,
@@ -283,6 +292,9 @@ Respond ONLY with JSON. No markdown, no explanation:
             "preempt": False,
         }
 
+        print(f"🤖 Sending request to DeepSeek...")
+        print(f"   Session: {self._chat_session_id}")
+        
         full_text = ""
 
         try:
@@ -292,10 +304,17 @@ Respond ONLY with JSON. No markdown, no explanation:
                 headers=comp_headers,
                 json=payload,
             ) as resp:
+                print(f"📡 Response status: {resp.status_code}")
+                
                 if resp.status_code != 200:
-                    return self._default_response(current_price, "HTTP error")
+                    error_text = await resp.aread()
+                    print(f"❌ HTTP Error: {error_text.decode()[:500]}")
+                    return self._default_response(current_price, f"HTTP {resp.status_code}")
                 
                 async for line in resp.aiter_lines():
+                    if line:
+                        print(f"📨 Line: {line[:100]}")
+                        
                     if not line or not line.startswith("data: "):
                         continue
                     
@@ -307,47 +326,51 @@ Respond ONLY with JSON. No markdown, no explanation:
                         jdata = json.loads(content)
                         if "v" in jdata and isinstance(jdata["v"], str):
                             full_text += jdata["v"]
+                            print(f"   + Chunk: {jdata['v'][:50]}")
                     except:
                         pass
 
-            # Parse JSON response
+            print(f"📝 Full response: {full_text[:500]}")
+            
+            # Parse JSON
             try:
                 start = full_text.find("{")
                 end = full_text.rfind("}") + 1
                 if start >= 0 and end > start:
                     result = json.loads(full_text[start:end])
                     
-                    # Ensure required fields exist
                     if "decision" not in result:
                         result["decision"] = "NO TRADE"
                     if "confidence" not in result:
                         result["confidence"] = 0
-                    if "entry" not in result or result["entry"] == 0:
-                        result["entry"] = current_price
                     
-                    # Add TP/SL based on decision
+                    result["entry"] = current_price
+                    
                     if result["decision"] == "LONG":
-                        result["tp"] = result.get("tp_long", tp_long)
-                        result["sl"] = result.get("sl_long", sl_long)
+                        result["tp"] = tp_long
+                        result["sl"] = sl_long
                     elif result["decision"] == "SHORT":
-                        result["tp"] = result.get("tp_short", tp_short)
-                        result["sl"] = result.get("sl_short", sl_short)
+                        result["tp"] = tp_short
+                        result["sl"] = sl_short
                     else:
                         result["tp"] = 0
                         result["sl"] = 0
                     
+                    print(f"✅ Parsed: {result}")
                     return result
                     
-            except json.JSONDecodeError:
-                pass
+            except Exception as e:
+                print(f"❌ Parse error: {e}")
             
             return self._default_response(current_price, "Parse error")
             
-        except Exception:
-            return self._default_response(current_price, "API error")
+        except Exception as e:
+            print(f"❌ Chat exception: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._default_response(current_price, str(e))
 
     def _default_response(self, current_price: float, reason: str) -> dict:
-        """Return safe default response"""
         return {
             "decision": "NO TRADE",
             "entry": current_price,
