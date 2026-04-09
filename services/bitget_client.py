@@ -91,14 +91,25 @@ class BitgetClient:
 
     async def get_candles(self, symbol: str, granularity: str, limit: int = 100) -> list:
         """V2 candles. Format: [ts, open, high, low, close, baseVol, quoteVol]"""
+        symbol = self._clean_symbol(symbol)
+    
+        print(f"🔍 Fetching candles for {symbol} with granularity {granularity}")
+    
         resp = await self.get("/api/v2/mix/market/candles", {
             "symbol": symbol,
             "productType": "USDT-FUTURES",
             "granularity": granularity,
             "limit": str(limit),
         })
+    
+        print(f"📦 Response code: {resp.get('code')}")
+    
         data = resp.get("data")
         if data and isinstance(data, list):
+            print(f"✅ Raw data length: {len(data)}")
+            if len(data) > 0:
+                print(f"📊 Sample candle: {data[0]}")
+        
             cleaned_data = []
             for candle in data:
                 if isinstance(candle, list) and len(candle) >= 7:
@@ -112,7 +123,10 @@ class BitgetClient:
                         float(candle[6]),    # quote volume
                     ]
                     cleaned_data.append(cleaned_candle)
+            print(f"✅ Cleaned data length: {len(cleaned_data)}")
             return cleaned_data
+    
+        print(f"❌ No data or invalid format: {type(data)}")
         return data or []
 
     async def get_symbol_leverage(self, symbol: str) -> dict:
