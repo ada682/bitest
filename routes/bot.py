@@ -49,5 +49,16 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         ws_manager.disconnect(ws)
 
+@router.get("/status/debug")
+async def debug_status(request: Request):
+    engine = request.app.state.bot_engine
+    return {
+        "running": engine.running,
+        "task_exists": engine._task is not None,
+        "task_done": engine._task.done() if engine._task else None,
+        "task_cancelled": engine._task.cancelled() if engine._task else None,
+        "state": engine.state,
+    }
+
 
 import asyncio
