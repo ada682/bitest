@@ -138,7 +138,7 @@ class DeepSeekAI:
         
             print(f"📦 Session create response status: {resp.status_code}")
         
-                try:
+            try:
                 data = resp.json()
                 print(f"📄 Response body: {json.dumps(data, indent=2)[:500]}")
             except Exception as e:
