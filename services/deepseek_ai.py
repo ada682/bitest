@@ -288,7 +288,9 @@ decision MUST be either LONG or SHORT - never NO TRADE"""
             "preempt": False,
         }
 
-        full_text = ""
+        full_text = ""      # answer only (outside <think>...</think>)
+        thinking_text = ""  # thinking phase — collected but NOT used for parsing
+        in_thinking = False
 
         try:
             async with self.client.stream(
@@ -312,8 +314,29 @@ decision MUST be either LONG or SHORT - never NO TRADE"""
                         
                     try:
                         jdata = json.loads(content)
-                        if "v" in jdata and isinstance(jdata["v"], str):
-                            full_text += jdata["v"]
+                        chunk = jdata.get("v", "")
+                        if not isinstance(chunk, str):
+                            continue
+
+                        # DeepSeek thinking_enabled streams reasoning inside
+                        # <think>...</think> tags.  Only accumulate text that
+                        # falls OUTSIDE those tags as the real answer to parse.
+                        if "<think>" in chunk:
+                            in_thinking = True
+                            before, _, rest = chunk.partition("<think>")
+                            if before:
+                                full_text += before
+                            thinking_text += rest
+                        elif "</think>" in chunk:
+                            in_thinking = False
+                            thinking_part, _, after = chunk.partition("</think>")
+                            thinking_text += thinking_part
+                            if after:
+                                full_text += after
+                        elif in_thinking:
+                            thinking_text += chunk
+                        else:
+                            full_text += chunk
                     except:
                         pass
 
