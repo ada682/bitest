@@ -21,15 +21,24 @@ DEEPSEEK_BASE = "https://chat.deepseek.com"
 # Headers ala Android + Chinese locale (mirip wrapper yang lancar)
 BASE_HEADERS = {
     "Host": "chat.deepseek.com",
-    "User-Agent": "DeepSeek/1.1.0 Android/35",  # Updated version
-    "Accept": "application/json",
-    "Accept-Encoding": "identity",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "en-US,en;q=0.9",
     "Content-Type": "application/json",
-    "x-client-platform": "android",
-    "x-client-version": "1.1.0",  # Updated from 1.3.0-auto-resume
-    "x-client-locale": "zh_CN",
-    "accept-charset": "UTF-8",
+    "x-client-platform": "web",  # Ganti dari android ke web
+    "x-client-version": "1.8.0",  # Versi terbaru
+    "x-app-version": "20241129.1",
+    "x-client-locale": "en_US",  # Ganti dari zh_CN
+    "x-client-timezone-offset": "25200",
+    "origin": "https://chat.deepseek.com",
     "referer": "https://chat.deepseek.com/",
+    "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
 }
 
 
@@ -124,6 +133,15 @@ class DeepSeekAI:
             "target_path": target_path,
         }
         return base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
+
+    async def _get_cookies(self):
+        """Get initial cookies from DeepSeek homepage"""
+        resp = await self.client.get("https://chat.deepseek.com/")
+        cookies = resp.cookies
+        ds_session_id = cookies.get("ds_session_id")
+        if ds_session_id:
+            self.headers["cookie"] = f"ds_session_id={ds_session_id}"
+        return ds_session_id
 
     async def _ensure_session(self):
         """Create or ensure chat session exists."""
