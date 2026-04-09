@@ -245,7 +245,7 @@ class DeepSeekAI:
         sl_short = round(current_price * 1.004, 8)
 
         # PROMPT: Force LONG or SHORT, no NO TRADE allowed
-        prompt = f"""You are a scalping trading AI. You MUST choose LONG or SHORT. NO TRADE is NOT allowed.
+        prompt = f"""You are a scalping trading AI. You MUST choose LONG or SHORT. NO TRADE is NOT allowed. SCALP TRADE OR DIE
 
 Current Price: {current_price}
 EMA9: {ema9}
@@ -269,7 +269,7 @@ OR
 {{"decision": "SHORT", "confidence": 80, "reason": "bla bla bla"}}
 
 CONFIDENCE must be between 60-100 (60=weak signal, 100=very strong)
-decision MUST be either "LONG" or "SHORT" - never "NO TRADE""""
+decision MUST be either LONG or SHORT - never NO TRADE"""
 
         pow_token = await self._do_pow("/api/v0/chat/completion")
 
@@ -283,7 +283,7 @@ decision MUST be either "LONG" or "SHORT" - never "NO TRADE""""
             "parent_message_id": self._parent_message_id,
             "prompt": prompt,
             "ref_file_ids": ref_file_ids,
-            "thinking_enabled": False,
+            "thinking_enabled": True,
             "search_enabled": False,
             "preempt": False,
         }
