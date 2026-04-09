@@ -147,15 +147,15 @@ class DeepSeekAI:
         """Create or ensure chat session exists."""
         if not self._chat_session_id:
             print(f"🔐 Creating DeepSeek session with token: {self.token[:20]}...")
-        
+    
             resp = await self.client.post(
                 "/api/v0/chat_session/create",
                 headers=self.headers,
                 json={},
             )
-        
+    
             print(f"📦 Session create response status: {resp.status_code}")
-        
+    
             try:
                 data = resp.json()
                 print(f"📄 Response body: {json.dumps(data, indent=2)[:500]}")
@@ -163,23 +163,28 @@ class DeepSeekAI:
                 print(f"❌ Failed to parse response: {e}")
                 print(f"Raw response: {resp.text[:500]}")
                 raise
-        
+    
         # Cek apakah ada error
             if data.get("code") != 0:
                 error_msg = data.get("msg", "Unknown error")
                 print(f"❌ DeepSeek API error: {error_msg}")
-                if "unauthorized" in error_msg.lower() or "token" in error_msg.lower():
-                    print("⚠️ Token invalid or expired! Please refresh your DeepSeek token.")
                 raise Exception(f"DeepSeek API error: {error_msg}")
-        
+    
+        # FIX: Extract session ID from correct path
             biz_data = data.get("data", {}).get("biz_data", {})
             if biz_data is None:
                 print(f"❌ biz_data is None. Full response: {data}")
                 raise Exception("Failed to create session: biz_data is None")
-         
-            self._chat_session_id = biz_data.get("id")
-            self._parent_message_id = None
         
+        # Get chat_session object
+            chat_session = biz_data.get("chat_session", {})
+            if not chat_session:
+                print(f"❌ No chat_session in biz_data: {biz_data}")
+                raise Exception("No chat_session in response")
+        
+            self._chat_session_id = chat_session.get("id")
+            self._parent_message_id = None
+    
             if self._chat_session_id:
                 print(f"✅ Created DeepSeek session: {self._chat_session_id}")
             else:
