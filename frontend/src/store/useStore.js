@@ -31,6 +31,7 @@ export const useStore = create((set, get) => ({
   activeTab: 'dashboard',
   wsConnected: false,
   ws: null,
+  isResetting: false,
   futuresBalance: {
     available: "0",
     locked: "0",
@@ -58,8 +59,11 @@ export const useStore = create((set, get) => ({
         else if (event === 'position_open') set({ openPosition: data })
         else if (event === 'position_close') {
           set(state => ({ openPosition: null, tradeCount: state.tradeCount + 1, totalPnl: state.totalPnl + (data.pnl || 0) }))
-          get().fetchTrades()
-          get().fetchSummary()
+          // Don't re-fetch if a reset is in progress
+          if (!get().isResetting) {
+            get().fetchTrades()
+            get().fetchSummary()
+          }
         }
         else if (event === 'position_update') {
           set(state => ({
@@ -73,6 +77,7 @@ export const useStore = create((set, get) => ({
         // --- Reset events from backend ---
         else if (event === 'reset_ui' || event === 'reset_all') {
           set({
+            isResetting: true,
             tradeCount: 0,
             winCount: 0,
             lossCount: 0,
@@ -85,13 +90,16 @@ export const useStore = create((set, get) => ({
             statusMessage: '',
             summary: null,
           })
+          // Allow fetches again after 3s (enough time for any in-flight requests to finish)
+          setTimeout(() => set({ isResetting: false }), 3000)
           if (event === 'reset_all') {
             ws.close()
             setTimeout(() => get().initWs(), 500)
           }
         }
         else if (event === 'clear_trades') {
-          set({ trades: [], pnlHistory: [] })
+          set({ isResetting: true, trades: [], pnlHistory: [] })
+          setTimeout(() => set({ isResetting: false }), 3000)
         }
         else if (event === 'reconnect_ws') {
           ws.close()
