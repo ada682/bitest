@@ -216,20 +216,37 @@ class DeepSeekAI:
         except Exception:
             return None
 
-    async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str = None) -> dict:
+    async def analyze(self, ohlcv_text: str, indicators: dict,
+                       chart_images=None) -> dict:
         """
         Analyze market data - FORCED to return LONG or SHORT only.
         NO TRADE is not allowed for scalping.
-        Uses original TP/SL calculation (0.4% tp, 0.4% sl)
+
+        chart_images: list of base64 strings [chart_1m_b64, chart_3m_b64, ...]
+                      Also accepts a single base64 string for backward compatibility.
         """
         await self._ensure_session()
 
-        # Upload chart image (optional)
+        # Normalise chart_images: accept str, list[str], or None
+        if isinstance(chart_images, str):
+            images_list = [chart_images] if chart_images else []
+        elif isinstance(chart_images, list):
+            images_list = [img for img in chart_images if img]
+        else:
+            images_list = []
+
+        # Upload all chart images concurrently
         ref_file_ids = []
-        if chart_image_b64:
-            file_id = await self.upload_image(chart_image_b64)
-            if file_id:
-                ref_file_ids = [file_id]
+        if images_list:
+            labels = ["1m", "3m", "5m", "15m"]
+            upload_tasks = [
+                self.upload_image(b64, filename=f"chart_{labels[i] if i < len(labels) else i}.png")
+                for i, b64 in enumerate(images_list)
+            ]
+            results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+            for file_id in results:
+                if isinstance(file_id, str) and file_id:
+                    ref_file_ids.append(file_id)
 
         # Extract indicators
         current_price = indicators.get('current_price', 0)
@@ -237,15 +254,30 @@ class DeepSeekAI:
         ema21 = indicators.get('ema21_last', current_price)
         rsi = indicators.get('rsi_last', 50)
         trend = indicators.get('trend', 'NEUTRAL')
-        
-        # Original TP/SL calculation (0.4% for both)
+
+        # TP/SL calculation (0.4% for both)
         tp_long = round(current_price * 1.004, 8)
         sl_long = round(current_price * 0.996, 8)
         tp_short = round(current_price * 0.996, 8)
         sl_short = round(current_price * 1.004, 8)
 
-        # PROMPT: Force LONG or SHORT, no NO TRADE allowed
+        # Build image context hint for the prompt
+        img_count = len(ref_file_ids)
+        if img_count >= 2:
+            image_note = (
+                "I have attached 2 chart images: "
+                "the FIRST image is the 1-minute (1m) timeframe chart, "
+                "the SECOND image is the 3-minute (3m) timeframe chart. "
+                "Use BOTH charts together — 3m for overall trend direction, 1m for precise entry timing."
+            )
+        elif img_count == 1:
+            image_note = "I have attached 1 chart image (1m timeframe)."
+        else:
+            image_note = "No chart images available."
+
         prompt = f"""You are a scalping trading AI. You MUST choose LONG or SHORT. NO TRADE is NOT allowed. SCALP TRADE OR DIE
+
+{image_note}
 
 Current Price: {current_price}
 EMA9: {ema9}
@@ -257,9 +289,10 @@ Recent candles (oldest to newest):
 {ohlcv_text}
 
 RULES for scalping:
-- LONG 
-- SHORT 
-- If both signals are weak, choose based on recent price action
+- LONG when momentum / trend supports upward move
+- SHORT when momentum / trend supports downward move
+- If both signals are weak, choose based on most recent price action
+- Use both timeframes for confluence: 3m for trend direction, 1m for precise entry
 
 You MUST respond with ONLY this JSON format. NO other text:
 {{"decision": "LONG", "confidence": 85, "reason": "bla bla bla"}}
@@ -300,27 +333,27 @@ decision MUST be either LONG or SHORT - never NO TRADE"""
                 json=payload,
             ) as resp:
                 if resp.status_code != 200:
-                    return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short, 
-                                                "LONG" if current_price >= ema21 else "SHORT", 
+                    return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short,
+                                                "LONG" if current_price >= ema21 else "SHORT",
                                                 "API error, defaulting based on EMA")
-                
+
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data: "):
                         continue
-                    
-                    content = line[6:]
-                    if not content or content == "{}":
+
+                    content_chunk = line[6:]
+                    if not content_chunk or content_chunk == "{}":
                         continue
-                        
+
                     try:
-                        jdata = json.loads(content)
+                        jdata = json.loads(content_chunk)
                         chunk = jdata.get("v", "")
                         if not isinstance(chunk, str):
                             continue
 
                         # DeepSeek thinking_enabled streams reasoning inside
-                        # <think>...</think> tags.  Only accumulate text that
-                        # falls OUTSIDE those tags as the real answer to parse.
+                        # <think>...</think> tags. Only accumulate text OUTSIDE
+                        # those tags as the real answer to parse.
                         if "<think>" in chunk:
                             in_thinking = True
                             before, _, rest = chunk.partition("<think>")
@@ -342,39 +375,35 @@ decision MUST be either LONG or SHORT - never NO TRADE"""
 
             # Parse response
             try:
-                # Fix missing braces
                 if full_text and not full_text.startswith('{'):
                     if full_text.startswith('"decision"') or full_text.startswith('decision'):
                         full_text = '{' + full_text
                 if full_text and not full_text.endswith('}'):
                     full_text = full_text + '}'
-                
+
                 start = full_text.find("{")
                 end = full_text.rfind("}") + 1
-                
+
                 if start >= 0 and end > start:
                     result = json.loads(full_text[start:end])
                     decision = result.get("decision", "LONG").upper()
                     confidence = result.get("confidence", 70)
                     reason = result.get("reason", "AI analysis")
                 else:
-                    # Regex fallback
                     decision_match = re.search(r'"decision"?:\s*"(LONG|SHORT)"', full_text, re.IGNORECASE)
                     decision = decision_match.group(1).upper() if decision_match else ("LONG" if current_price >= ema21 else "SHORT")
-                    
+
                     conf_match = re.search(r'"confidence"?:\s*(\d+)', full_text)
                     confidence = int(conf_match.group(1)) if conf_match else 70
-                    
+
                     reason_match = re.search(r'"reason"?:\s*"([^"]+)"', full_text)
                     reason = reason_match.group(1) if reason_match else "Technical analysis"
-                
-                # Force decision to be LONG or SHORT
+
                 if decision not in ["LONG", "SHORT"]:
                     decision = "LONG" if current_price >= ema21 else "SHORT"
                     confidence = 65
                     reason = f"Default: price {'above' if decision == 'LONG' else 'below'} EMA21"
-                
-                # Build response with original TP/SL
+
                 if decision == "LONG":
                     return {
                         "decision": "LONG",
@@ -393,17 +422,17 @@ decision MUST be either LONG or SHORT - never NO TRADE"""
                         "confidence": min(100, max(60, confidence)),
                         "reason": reason
                     }
-                    
+
             except Exception:
-                # Default fallback - always return LONG or SHORT
-                return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short, 
-                                            "LONG" if current_price >= ema21 else "SHORT", 
+                return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short,
+                                            "LONG" if current_price >= ema21 else "SHORT",
                                             "Fallback based on EMA position")
-            
+
         except Exception:
             return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short,
                                         "LONG" if current_price >= ema21 else "SHORT",
                                         "Emergency fallback")
+
 
     def _forced_response(self, price: float, tp_long: float, sl_long: float, 
                          tp_short: float, sl_short: float, decision: str, reason: str) -> dict:
