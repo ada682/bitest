@@ -1,6 +1,6 @@
 """
 DeepSeek AI integration using Web API with image support.
-Flow: Upload chart image -> poll until SUCCESS -> send with OHLCV data.
+Updated with Android headers, Chinese locale, and thinking_enabled.
 """
 
 import asyncio
@@ -15,8 +15,22 @@ import wasmtime
 from threading import Lock
 from typing import Optional
 
-
+# Konfigurasi seperti deepseek_wrapper.py yang lancar
 DEEPSEEK_BASE = "https://chat.deepseek.com"
+
+# Headers ala Android + Chinese locale (mirip wrapper yang lancar)
+BASE_HEADERS = {
+    "Host": "chat.deepseek.com",
+    "User-Agent": "DeepSeek/1.0.13 Android/35",
+    "Accept": "application/json",
+    "Accept-Encoding": "identity",
+    "Content-Type": "application/json",
+    "x-client-platform": "android",
+    "x-client-version": "1.3.0-auto-resume",
+    "x-client-locale": "zh_CN",
+    "accept-charset": "UTF-8",
+    "referer": "https://chat.deepseek.com/",
+}
 
 
 class DeepSeekHashV1Solver:
@@ -77,16 +91,9 @@ class DeepSeekAI:
         self.wasm_path = os.getenv("DEEPSEEK_WASM_PATH", "sha3.wasm")
         self.solver = None
         self._init_solver()
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "authorization": f"Bearer {self.token}",
-            "x-client-platform": "web",
-            "x-client-locale": "en_US",
-            "x-client-version": "1.8.0",
-            "x-app-version": "20241129.1",
-            "referer": "https://chat.deepseek.com/",
-            "origin": "https://chat.deepseek.com",
-        }
+        # Gunakan headers ala Android
+        self.headers = BASE_HEADERS.copy()
+        self.headers["authorization"] = f"Bearer {self.token}"
         self.client = httpx.AsyncClient(base_url=DEEPSEEK_BASE, timeout=60)
         self._chat_session_id: Optional[str] = None
         self._parent_message_id: Optional[int] = None
@@ -96,6 +103,7 @@ class DeepSeekAI:
             self.solver = DeepSeekHashV1Solver(self.wasm_path)
 
     async def _do_pow(self, target_path: str) -> str:
+        """Get PoW token for DeepSeek API."""
         resp = await self.client.post(
             "/api/v0/chat/create_pow_challenge",
             headers={**self.headers, "Content-Type": "application/json"},
@@ -118,19 +126,29 @@ class DeepSeekAI:
         return base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
 
     async def _ensure_session(self):
+        """Create or ensure chat session exists."""
         if not self._chat_session_id:
             resp = await self.client.post(
                 "/api/v0/chat_session/create",
-                headers={**self.headers, "Content-Type": "application/json"},
+                headers=self.headers,
                 json={},
             )
             data = resp.json()
             self._chat_session_id = data.get("data", {}).get("biz_data", {}).get("id")
             self._parent_message_id = None
+            print(f"✅ Created DeepSeek session: {self._chat_session_id}")
 
     async def upload_image(self, image_base64: str, filename: str = "chart.png") -> Optional[str]:
         """Upload base64 image to DeepSeek, return file_id."""
-        image_bytes = base64.b64decode(image_base64)
+        if not image_base64:
+            print("❌ No image data provided")
+            return None
+        
+        try:
+            image_bytes = base64.b64decode(image_base64)
+        except Exception as e:
+            print(f"❌ Failed to decode base64 image: {e}")
+            return None
 
         # Get POW for upload
         pow_token = await self._do_pow("/api/v0/file/upload_file")
@@ -167,45 +185,38 @@ class DeepSeekAI:
 
         return None
 
-    async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str) -> dict:
+    async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str = None) -> dict:
         """
         Send chart image + OHLCV data to DeepSeek for trading decision.
         Returns parsed JSON decision.
         """
         await self._ensure_session()
 
-        # Upload chart image
-        file_id = await self.upload_image(chart_image_b64)
-        ref_file_ids = [file_id] if file_id else []
+        # Upload chart image (optional)
+        ref_file_ids = []
+        if chart_image_b64:
+            print("📤 Uploading chart image...")
+            file_id = await self.upload_image(chart_image_b64)
+            if file_id:
+                ref_file_ids = [file_id]
+                print(f"✅ Chart uploaded: {file_id}")
+            else:
+                print("⚠️ Chart upload failed, continuing without image")
 
-        # Build prompt
-        prompt = f"""You are a professional crypto scalping trader AI. Analyze the provided chart image AND OHLCV data below to make a trading decision.
+        # Build prompt - lebih sederhana seperti wrapper yang lancar
+        prompt = f"""You are a professional crypto scalping trader AI. Analyze the data below to make a trading decision.
+
+Current Price: {indicators.get('current_price', 'N/A')}
+EMA9: {indicators.get('ema9_last', 'N/A')}
+EMA21: {indicators.get('ema21_last', 'N/A')}
+RSI: {indicators.get('rsi_last', 'N/A')}
+Trend: {indicators.get('trend', 'N/A')}
 
 OHLCV Data (last candles, newest last):
 {ohlcv_text}
 
-Pre-calculated Indicators:
-- EMA9 (last): {indicators.get('ema9_last', 'N/A')}
-- EMA21 (last): {indicators.get('ema21_last', 'N/A')}
-- RSI (last): {indicators.get('rsi_last', 'N/A')}
-- Parabolic SAR (last): {indicators.get('psar_last', 'N/A')}
-- Current price: {indicators.get('current_price', 'N/A')}
-- Trend (EMA crossover): {indicators.get('trend', 'N/A')}
-
-Instructions:
-1. Analyze the chart image for visual patterns, market structure, support/resistance
-2. Validate with the OHLCV numbers above
-3. Combine both signals to make your decision
-
 IMPORTANT: Respond ONLY with a valid JSON object, no markdown, no explanation outside JSON:
-{{
-  "decision": "BUY" or "SELL" or "NO TRADE",
-  "entry": <current price as number>,
-  "tp": <take profit price as number>,
-  "sl": <stop loss price as number>,
-  "confidence": <0-100 as number>,
-  "reason": "<brief explanation under 100 chars>"
-}}
+{{"decision": "BUY" or "SELL" or "NO TRADE", "entry": {indicators.get('current_price', 0)}, "tp": {indicators.get('current_price', 0) * 1.004}, "sl": {indicators.get('current_price', 0) * 0.996}, "confidence": 0-100, "reason": "brief explanation"}}
 
 Rules:
 - Only BUY or SELL if confidence > 75
@@ -227,13 +238,16 @@ Rules:
             "parent_message_id": self._parent_message_id,
             "prompt": prompt,
             "ref_file_ids": ref_file_ids,
-            "thinking_enabled": False,
+            "thinking_enabled": True,  # <-- AKTIF!
             "search_enabled": False,
             "preempt": False,
             "model_type": "default",
         }
 
+        print(f"🤖 Sending request to DeepSeek with thinking_enabled=True...")
+        
         full_text = ""
+        thinking_text = ""
         response_message_id = None
 
         async with self.client.stream(
@@ -259,8 +273,21 @@ Rules:
 
                 if last_event == "ready":
                     response_message_id = jdata.get("response_message_id")
-                elif "p" in jdata and jdata["p"] == "response/fragments/-1/content":
-                    full_text += jdata.get("v", "")
+                elif "p" in jdata:
+                    p = jdata["p"]
+                    v = str(jdata.get("v", ""))
+                    if p == "response/content":
+                        full_text += v
+                    elif p == "thinking/content":
+                        thinking_text += v
+                    elif p == "response/start":
+                        pass
+                    elif p == "response/end":
+                        pass
+                    elif p == "thinking/start":
+                        pass
+                    elif p == "thinking/end":
+                        pass
                 elif "v" in jdata:
                     v = jdata["v"]
                     if isinstance(v, str):
@@ -268,20 +295,41 @@ Rules:
 
         self._parent_message_id = response_message_id
 
-        # Parse JSON from response
+        if thinking_text:
+            print(f"🧠 Thinking ({len(thinking_text)} chars): {thinking_text[:200]}...")
+
+        print(f"📝 Response ({len(full_text)} chars): {full_text[:300]}...")
+
+        # Parse JSON dari response
         try:
-            # Find JSON block
+            # Cari JSON object
             start = full_text.find("{")
             end = full_text.rfind("}") + 1
             if start >= 0 and end > start:
-                result = json.loads(full_text[start:end])
+                json_str = full_text[start:end]
+                result = json.loads(json_str)
+                print(f"✅ Parsed result: {result}")
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"❌ JSON Parse error: {e}")
+            print(f"Raw response: {full_text[:500]}")
+
+        # Fallback: coba cari dengan regex
+        import re
+        json_pattern = r'\{[^{}]*"decision"[^{}]*\}'
+        matches = re.findall(json_pattern, full_text)
+        if matches:
+            try:
+                result = json.loads(matches[0])
+                print(f"✅ Regex parsed: {result}")
+                return result
+            except:
+                pass
 
         return {"decision": "NO TRADE", "entry": 0, "tp": 0, "sl": 0, "confidence": 0, "reason": "Parse error"}
 
     async def close(self):
         await self.client.aclose()
+
 
 deepseek_ai = DeepSeekAI()
