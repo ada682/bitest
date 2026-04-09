@@ -257,16 +257,16 @@ Recent candles (oldest to newest):
 {ohlcv_text}
 
 RULES for scalping:
-- LONG if: price is above EMA21 OR RSI > 55 OR uptrend OR recent candles show higher lows
-- SHORT if: price is below EMA21 OR RSI < 45 OR downtrend OR recent candles show lower highs
+- LONG 
+- SHORT 
 - If both signals are weak, choose based on recent price action
 
 You MUST respond with ONLY this JSON format. NO other text:
-{{"decision": "LONG", "confidence": 85, "reason": "price above EMA21 with bullish momentum"}}
+{{"decision": "LONG", "confidence": 85, "reason": "bla bla bla"}}
 
 OR
 
-{{"decision": "SHORT", "confidence": 80, "reason": "RSI below 45 with bearish candles"}}
+{{"decision": "SHORT", "confidence": 80, "reason": "bla bla bla"}}
 
 CONFIDENCE must be between 60-100 (60=weak signal, 100=very strong)
 decision MUST be either "LONG" or "SHORT" - never "NO TRADE""""
