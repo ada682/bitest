@@ -1,9 +1,28 @@
+import os
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional
 from services.ws_manager import ws_manager
 
 router = APIRouter()
+
+
+@router.post("/verify-pin")
+async def verify_pin(request: Request):
+    """Verify bot control PIN from request body against BOT_PIN env variable."""
+    body = await request.json()
+    entered = str(body.get("pin", "")).strip()
+    correct = str(os.getenv("BOT_PIN", "")).strip()
+
+    if not correct:
+        # No PIN configured — open access (warn in logs)
+        print("⚠️  BOT_PIN not set in environment. Bot is unprotected!")
+        return {"ok": True}
+
+    if entered == correct:
+        return {"ok": True}
+
+    return {"ok": False, "reason": "Wrong PIN"}
 
 
 class BotConfig(BaseModel):
@@ -221,81 +240,3 @@ async def test_ai_raw(request: Request):
     }
 
 import asyncio
-import time
-
-
-@router.get("/reset-ui")
-async def reset_ui(request: Request):
-    """Reset UI counters and broadcast to all WS clients (bot keeps running)."""
-    engine = request.app.state.bot_engine
-
-    engine.state["trade_count"] = 0
-    engine.state["win_count"] = 0
-    engine.state["loss_count"] = 0
-    engine.state["total_pnl"] = 0.0
-    engine.state["last_signal"] = None
-    engine.state["open_position"] = None
-
-    await ws_manager.broadcast("reset_ui", {
-        "trade_count": 0,
-        "win_count": 0,
-        "loss_count": 0,
-        "total_pnl": 0.0,
-        "trades": [],
-        "pnl_history": [],
-    })
-
-    return {"ok": True, "message": "UI counters reset. Bot is still running."}
-
-
-@router.get("/reset-ws")
-async def reset_ws(request: Request):
-    """Force all WebSocket clients to reconnect."""
-    await ws_manager.broadcast("reconnect_ws", {
-        "reason": "manual_reset",
-        "timestamp": int(time.time() * 1000),
-    })
-
-    return {"ok": True, "message": "Reconnect signal sent to all WS clients."}
-
-
-@router.get("/reset-all")
-async def reset_all(request: Request):
-    """Full reset: counters + UI state + force WS reconnect."""
-    engine = request.app.state.bot_engine
-
-    engine.state["trade_count"] = 0
-    engine.state["win_count"] = 0
-    engine.state["loss_count"] = 0
-    engine.state["total_pnl"] = 0.0
-    engine.state["last_signal"] = None
-    engine.state["open_position"] = None
-    engine.state["last_error"] = None
-
-    await ws_manager.broadcast("reset_all", {
-        "trade_count": 0,
-        "win_count": 0,
-        "loss_count": 0,
-        "total_pnl": 0.0,
-        "trades": [],
-        "pnl_history": [],
-        "last_signal": None,
-        "open_position": None,
-        "timestamp": int(time.time() * 1000),
-    })
-
-    await ws_manager.broadcast("reconnect_ws", {"reason": "full_reset"})
-
-    return {"ok": True, "message": "Full reset done. Counters cleared, WS clients reconnecting."}
-
-
-@router.get("/clear-trades")
-async def clear_trades(request: Request):
-    """Clear recent trades list from UI only (counters unchanged)."""
-    await ws_manager.broadcast("clear_trades", {
-        "trades": [],
-        "pnl_history": [],
-        "timestamp": int(time.time() * 1000),
-    })
-
-    return {"ok": True, "message": "Recent trades cleared from UI."}
