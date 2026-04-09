@@ -1,6 +1,6 @@
 """
 DeepSeek AI integration using Web API with image support.
-Updated with web headers, cookie handling, and proper SSE response parsing.
+Using Android headers (proven working) with full debugging.
 """
 
 import asyncio
@@ -18,27 +18,18 @@ from typing import Optional
 # DeepSeek Base URL
 DEEPSEEK_BASE = "https://chat.deepseek.com"
 
-# Headers based on inspect element (web platform)
-BASE_HEADERS = {
+# HEADERS ANDROID (dari repository yang terbukti berhasil)
+ANDROID_HEADERS = {
     "Host": "chat.deepseek.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-    "Accept": "*/*",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "DeepSeek/1.0.13 Android/35",
+    "Accept": "application/json",
+    "Accept-Encoding": "identity",
     "Content-Type": "application/json",
-    "x-client-platform": "web",
-    "x-client-version": "1.8.0",
-    "x-app-version": "20241129.1",
-    "x-client-locale": "en_US",
-    "x-client-timezone-offset": "25200",
-    "origin": "https://chat.deepseek.com",
+    "x-client-platform": "android",
+    "x-client-version": "1.3.0-auto-resume",
+    "x-client-locale": "zh_CN",
+    "accept-charset": "UTF-8",
     "referer": "https://chat.deepseek.com/",
-    "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
 }
 
 
@@ -99,15 +90,15 @@ class DeepSeekAI:
         self.token = os.getenv("DEEPSEEK_TOKEN", "")
         self.wasm_path = os.getenv("DEEPSEEK_WASM_PATH", "sha3.wasm")
         self.solver = None
-        self._cookies_initialized = False
         self._init_solver()
         
-        # Initialize headers
-        self.headers = BASE_HEADERS.copy()
-        self.headers["authorization"] = f"Bearer {self.token}"
+        # Initialize headers dengan ANDROID version
+        self.headers = ANDROID_HEADERS.copy()
+        if self.token:
+            self.headers["authorization"] = f"Bearer {self.token}"
         
-        # Create client with cookie handling
-        self.client = httpx.AsyncClient(base_url=DEEPSEEK_BASE, timeout=60)
+        # Create client
+        self.client = httpx.AsyncClient(base_url=DEEPSEEK_BASE, timeout=120.0)
         
         self._chat_session_id: Optional[str] = None
         self._parent_message_id: Optional[int] = None
@@ -120,41 +111,16 @@ class DeepSeekAI:
         else:
             print(f"⚠️ WASM file not found at: {self.wasm_path}")
 
-    async def _init_cookies(self):
-        """Initialize cookies from DeepSeek homepage"""
-        if self._cookies_initialized:
-            return
-            
-        try:
-            print("🍪 Getting initial cookies from DeepSeek...")
-            resp = await self.client.get("/")
-            cookies = resp.cookies
-            ds_session_id = cookies.get("ds_session_id")
-            if ds_session_id:
-                cookie_str = f"ds_session_id={ds_session_id}"
-                # Add other cookies if present
-                for key in ["smidV2", "cf_clearance"]:
-                    if cookies.get(key):
-                        cookie_str += f"; {key}={cookies.get(key)}"
-                self.headers["cookie"] = cookie_str
-                print(f"✅ Got session cookie: {ds_session_id}")
-                self._cookies_initialized = True
-            else:
-                print("⚠️ No ds_session_id cookie found")
-        except Exception as e:
-            print(f"❌ Failed to get cookies: {e}")
-
     async def _do_pow(self, target_path: str) -> str:
         """Get PoW token for DeepSeek API."""
         try:
             resp = await self.client.post(
                 "/api/v0/chat/create_pow_challenge",
-                headers={**self.headers, "Content-Type": "application/json"},
+                headers=self.headers,
                 json={"target_path": target_path},
             )
             data = resp.json()
             
-            # Check response
             if data.get("code") != 0:
                 print(f"⚠️ PoW challenge error: {data.get('msg')}")
                 return ""
@@ -188,9 +154,6 @@ class DeepSeekAI:
     async def _ensure_session(self):
         """Create or ensure chat session exists."""
         if not self._chat_session_id:
-            # Initialize cookies first
-            await self._init_cookies()
-            
             print(f"🔐 Creating DeepSeek session...")
         
             resp = await self.client.post(
@@ -203,43 +166,29 @@ class DeepSeekAI:
         
             try:
                 data = resp.json()
-                print(f"📄 Response body: {json.dumps(data, indent=2)[:500]}")
+                print(f"📄 Response: code={data.get('code')}")
             except Exception as e:
                 print(f"❌ Failed to parse response: {e}")
-                print(f"Raw response: {resp.text[:500]}")
                 raise
         
-            # Check for errors
             if data.get("code") != 0:
                 error_msg = data.get("msg", "Unknown error")
                 print(f"❌ DeepSeek API error: {error_msg}")
                 raise Exception(f"DeepSeek API error: {error_msg}")
         
-            # Extract session ID from correct path
             biz_data = data.get("data", {}).get("biz_data", {})
-            if biz_data is None:
-                print(f"❌ biz_data is None. Full response: {data}")
-                raise Exception("Failed to create session: biz_data is None")
-            
-            # Get chat_session object
             chat_session = biz_data.get("chat_session", {})
-            if not chat_session:
-                print(f"❌ No chat_session in biz_data: {biz_data}")
-                raise Exception("No chat_session in response")
-            
             self._chat_session_id = chat_session.get("id")
             self._parent_message_id = None
         
             if self._chat_session_id:
                 print(f"✅ Created DeepSeek session: {self._chat_session_id}")
             else:
-                print(f"❌ No session ID in response: {biz_data}")
                 raise Exception("No session ID returned from DeepSeek")
 
     async def upload_image(self, image_base64: str, filename: str = "image.png") -> Optional[str]:
         """Upload base64 image to DeepSeek, return file_id."""
         if not image_base64:
-            print("❌ No image data provided")
             return None
         
         try:
@@ -249,18 +198,12 @@ class DeepSeekAI:
             print(f"❌ Failed to decode base64 image: {e}")
             return None
 
-        # Get POW for upload
         pow_token = await self._do_pow("/api/v0/file/upload_file")
-        if not pow_token:
-            print("⚠️ No PoW token for upload, continuing anyway...")
 
-        # Prepare upload headers
         upload_headers = {k: v for k, v in self.headers.items() if k != "Content-Type"}
         upload_headers["x-ds-pow-response"] = pow_token
         upload_headers["x-file-size"] = str(len(image_bytes))
-        upload_headers["x-thinking-enabled"] = "0"
 
-        # Prepare multipart form data
         files = {"file": (filename, image_bytes, "image/png")}
         
         try:
@@ -277,16 +220,15 @@ class DeepSeekAI:
                 
             file_id = data.get("data", {}).get("biz_data", {}).get("id")
             if not file_id:
-                print(f"❌ No file_id in response: {data}")
                 return None
                 
-            print(f"📤 File uploaded: {file_id}, status: PENDING")
+            print(f"📤 File uploaded: {file_id}")
             
             # Poll until SUCCESS
             for attempt in range(30):
                 await asyncio.sleep(1)
                 poll_resp = await self.client.get(
-                    f"/api/v0/file/fetch_files",
+                    "/api/v0/file/fetch_files",
                     params={"file_ids": file_id},
                     headers=self.headers,
                 )
@@ -295,18 +237,14 @@ class DeepSeekAI:
                 
                 if files_data:
                     status = files_data[0].get("status")
-                    print(f"  Poll {attempt+1}: status={status}")
+                    print(f"  Poll {attempt+1}: {status}")
                     
                     if status == "SUCCESS":
-                        token_usage = files_data[0].get("token_usage", 0)
-                        print(f"✅ File ready! Token usage: {token_usage}")
+                        print(f"✅ File ready!")
                         return file_id
                     elif status in ("FAILED", "ERROR"):
-                        error_code = files_data[0].get("error_code")
-                        print(f"❌ File processing failed: {status}, error: {error_code}")
                         return None
             
-            print("⚠️ Upload timeout - file still not ready")
             return None
             
         except Exception as e:
@@ -316,7 +254,6 @@ class DeepSeekAI:
     async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str = None) -> dict:
         """
         Send chart image + OHLCV data to DeepSeek for trading decision.
-        Returns parsed JSON decision.
         """
         await self._ensure_session()
 
@@ -328,40 +265,22 @@ class DeepSeekAI:
             if file_id:
                 ref_file_ids = [file_id]
                 print(f"✅ Chart uploaded: {file_id}")
-            else:
-                print("⚠️ Chart upload failed, continuing without image")
 
-        # Build prompt
+        # Simple prompt for testing
         current_price = indicators.get('current_price', 0)
-        tp_price = current_price * 1.004 if current_price else 0
-        sl_price = current_price * 0.996 if current_price else 0
         
-        prompt = f"""You are a professional crypto scalping trader AI. Analyze the data below to make a trading decision.
-
-Current Price: {indicators.get('current_price', 'N/A')}
+        prompt = f"""Current price: {current_price}
 EMA9: {indicators.get('ema9_last', 'N/A')}
 EMA21: {indicators.get('ema21_last', 'N/A')}
 RSI: {indicators.get('rsi_last', 'N/A')}
-Trend: {indicators.get('trend', 'N/A')}
 
-OHLCV Data (last candles, newest last):
-{ohlcv_text}
-
-IMPORTANT: Respond ONLY with a valid JSON object, no markdown, no explanation outside JSON:
-{{"decision": "BUY" or "SELL" or "NO TRADE", "entry": {current_price}, "tp": {tp_price}, "sl": {sl_price}, "confidence": 0-100, "reason": "brief explanation"}}
-
-Rules:
-- Only BUY or SELL if confidence > 75
-- Target profit: 0.2% to 0.5%
-- Stop loss: 0.15% to 0.3%
-- NO TRADE if market is sideways or unclear"""
+Respond with JSON: {{"decision": "BUY" or "SELL" or "NO TRADE", "confidence": 0-100}}"""
 
         # Get POW for chat completion
         pow_token = await self._do_pow("/api/v0/chat/completion")
 
         comp_headers = {
             **self.headers,
-            "Content-Type": "application/json",
             "x-ds-pow-response": pow_token,
         }
 
@@ -370,15 +289,13 @@ Rules:
             "parent_message_id": self._parent_message_id,
             "prompt": prompt,
             "ref_file_ids": ref_file_ids,
-            "thinking_enabled": False,  # Set to False for faster response
+            "thinking_enabled": False,
             "search_enabled": False,
             "preempt": False,
-            "model_type": "default",
         }
 
         print(f"🤖 Sending request to DeepSeek...")
         print(f"   Session: {self._chat_session_id}")
-        print(f"   Files: {ref_file_ids if ref_file_ids else 'none'}")
         
         full_text = ""
         response_message_id = None
@@ -390,93 +307,76 @@ Rules:
                 headers=comp_headers,
                 json=payload,
             ) as resp:
-                event_type = None
+                print(f"📡 Response status: {resp.status_code}")
+                print(f"📡 Response headers: {dict(resp.headers)}")
+                
+                if resp.status_code != 200:
+                    error_text = await resp.aread()
+                    print(f"❌ Error response: {error_text.decode()[:500]}")
+                    return {"decision": "NO TRADE", "reason": f"HTTP {resp.status_code}"}
+                
                 async for line in resp.aiter_lines():
+                    if line:
+                        print(f"📨 LINE: {line[:200]}")  # DEBUG: print every line
+                        
                     if not line:
                         continue
                     
-                    # Handle event type
                     if line.startswith("event: "):
                         event_type = line[7:]
+                        print(f"   Event: {event_type}")
                         continue
                         
-                    # Handle data
                     if not line.startswith("data: "):
                         continue
                         
                     content = line[6:]
-                    
-                    # Skip empty data
                     if not content or content == "{}":
                         continue
                         
                     try:
                         jdata = json.loads(content)
-                    except Exception:
-                        continue
-                    
-                    # Handle different response formats
-                    if event_type == "ready":
-                        response_message_id = jdata.get("response_message_id")
-                        print(f"📨 Ready: request={jdata.get('request_message_id')}, response={response_message_id}")
-                    
-                    elif "v" in jdata:
-                        v = jdata["v"]
-                        if isinstance(v, str):
-                            full_text += v
-                        elif isinstance(v, dict):
-                            # Handle response object
-                            if "response" in v:
-                                resp_obj = v["response"]
-                                if "fragments" in resp_obj:
-                                    for frag in resp_obj["fragments"]:
-                                        if frag.get("type") == "RESPONSE":
-                                            full_text += frag.get("content", "")
-                    
-                    elif "p" in jdata and jdata.get("p") == "response/fragments/-1/content":
-                        if jdata.get("o") == "APPEND" and "v" in jdata:
+                        
+                        # Extract text from response
+                        if "v" in jdata and isinstance(jdata["v"], str):
                             full_text += jdata["v"]
+                            print(f"   + Text chunk: {jdata['v'][:50]}")
+                            
+                        elif "choices" in jdata:
+                            # OpenAI format
+                            delta = jdata["choices"][0].get("delta", {})
+                            if "content" in delta:
+                                full_text += delta["content"]
+                                
+                    except json.JSONDecodeError:
+                        pass
 
+            print(f"\n📝 Full response ({len(full_text)} chars):")
+            print(full_text[:500])
+            
             self._parent_message_id = response_message_id
 
-            print(f"📝 Response ({len(full_text)} chars): {full_text[:300]}...")
-
-            # Parse JSON dari response
+            # Parse JSON
             try:
-                # Cari JSON object
                 start = full_text.find("{")
                 end = full_text.rfind("}") + 1
                 if start >= 0 and end > start:
-                    json_str = full_text[start:end]
-                    result = json.loads(json_str)
-                    print(f"✅ Parsed result: {result}")
+                    result = json.loads(full_text[start:end])
+                    print(f"✅ Parsed: {result}")
                     return result
             except Exception as e:
-                print(f"❌ JSON Parse error: {e}")
-                print(f"Raw response: {full_text[:500]}")
+                print(f"❌ Parse error: {e}")
 
-            # Fallback: coba cari dengan regex
-            import re
-            json_pattern = r'\{[^{}]*"decision"[^{}]*\}'
-            matches = re.findall(json_pattern, full_text)
-            if matches:
-                try:
-                    result = json.loads(matches[0])
-                    print(f"✅ Regex parsed: {result}")
-                    return result
-                except:
-                    pass
-
-            return {"decision": "NO TRADE", "entry": 0, "tp": 0, "sl": 0, "confidence": 0, "reason": f"Parse error: {full_text[:100]}"}
+            return {"decision": "NO TRADE", "confidence": 0, "reason": "No valid JSON"}
             
         except Exception as e:
             print(f"❌ Chat completion error: {e}")
-            return {"decision": "NO TRADE", "entry": 0, "tp": 0, "sl": 0, "confidence": 0, "reason": str(e)}
+            import traceback
+            traceback.print_exc()
+            return {"decision": "NO TRADE", "reason": str(e)}
 
     async def close(self):
-        """Close the HTTP client"""
         await self.client.aclose()
 
 
-# Global instance
 deepseek_ai = DeepSeekAI()
