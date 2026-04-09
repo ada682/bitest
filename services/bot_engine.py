@@ -98,66 +98,88 @@ class BotEngine:
         self.state["status"] = "IDLE"
 
     async def _cycle(self):
-        cfg = self.config
-        symbol = cfg.get("symbol", "BTCUSDT_UMCBL")
-        margin_coin = "USDT"
-        leverage = str(cfg.get("leverage", "10"))
-        mode = cfg.get("mode", "MANUAL")
-        manual_margin = cfg.get("manual_margin", None)
-        tp_pct = cfg.get("tp_pct", 0.004)
-        sl_pct = cfg.get("sl_pct", 0.002)
+        try:
+            print("=== CYCLE START ===")
+            cfg = self.config
+            raw_symbol = cfg.get("symbol", "BTCUSDT")
+            symbol = raw_symbol.replace('_UMCBL', '')
+        
+            print(f"🎯 Symbol: {symbol}")
+        
+            margin_coin = "USDT"
+            leverage = str(cfg.get("leverage", "10"))
+            mode = cfg.get("mode", "MANUAL")
+            manual_margin = cfg.get("manual_margin", None)
+            tp_pct = cfg.get("tp_pct", 0.004)
+            sl_pct = cfg.get("sl_pct", 0.002)
 
-        # 1. Fetch candle data
-        self._emit("status", "Fetching market data...")
-        candles_1m = await bitget.get_candles(symbol, "1m", 100)
-        candles_3m = await bitget.get_candles(symbol, "3m", 100)
+            # 1. Fetch candle data
+            print(f"📊 Fetching candles for {symbol}...")
+            candles_1m = await bitget.get_candles(symbol, "1m", 100)
+            print(f"✅ Received {len(candles_1m)} candles for 1m")
+        
+            candles_3m = await bitget.get_candles(symbol, "3m", 100)
+            print(f"✅ Received {len(candles_3m)} candles for 3m")
 
-        if not candles_1m or len(candles_1m) < 30:
-            self._emit("status", "Insufficient candle data, waiting...")
-            await asyncio.sleep(10)
-            return
+            if not candles_1m or len(candles_1m) < 30:
+                print(f"❌ Insufficient candle data: {len(candles_1m)} candles (need 30)")
+                self._emit("status", f"Insufficient candle data: {len(candles_1m)}/30")
+                await asyncio.sleep(10)
+                return
 
         # 2. Generate chart image
-        self._emit("status", "Generating chart...")
-        chart_b64 = generate_chart_image(candles_1m, symbol.replace("_UMCBL", "").replace("USDT", "/USDT"), "1m")
+            print("📈 Generating chart image...")
+            chart_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
+            print(f"✅ Chart generated: {chart_b64 is not None} (length: {len(chart_b64) if chart_b64 else 0})") 
 
         # 3. Compute indicators
-        self._emit("status", "Computing indicators...")
-        indicators_1m = compute_all(candles_1m)
-        ohlcv_text = f"=== 1m Candles ===\n{format_ohlcv_text(candles_1m, 50)}\n\n=== 3m Candles ===\n{format_ohlcv_text(candles_3m, 30)}"
+            print("📐 Computing indicators...")
+            indicators_1m = compute_all(candles_1m)
+            ohlcv_text = f"=== 1m Candles ===\n{format_ohlcv_text(candles_1m, 50)}\n\n=== 3m Candles ===\n{format_ohlcv_text(candles_3m, 30)}"
+            print(f"✅ Indicators computed. Current price: {indicators_1m.get('current_price')}")
 
         # 4. AI analysis
-        self._emit("status", "Sending to AI for analysis...")
-        decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_b64)
+            print("🤖 Sending to AI for analysis...")
+            self._emit("status", "Analyzing with DeepSeek AI...")
+        
+            decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_b64)
+        
+            print(f"✅ AI Response: decision={decision.get('decision')}, confidence={decision.get('confidence')}")
 
-        self.state["last_signal"] = {
-            "symbol": symbol,
-            "decision": decision.get("decision"),
-            "entry": decision.get("entry"),
-            "tp": decision.get("tp"),
-            "sl": decision.get("sl"),
-            "confidence": decision.get("confidence"),
-            "reason": decision.get("reason"),
-            "timestamp": int(time.time() * 1000),
-        }
-        self._emit("signal", self.state["last_signal"])
+            self.state["last_signal"] = {
+                "symbol": symbol,
+                "decision": decision.get("decision"),
+                "entry": decision.get("entry"),
+                "tp": decision.get("tp"),
+                "sl": decision.get("sl"),
+                "confidence": decision.get("confidence"),
+                "reason": decision.get("reason"),
+                "timestamp": int(time.time() * 1000),
+            }
+            self._emit("signal", self.state["last_signal"])
 
         # 5. Execute trade if signal is strong
-        trade_decision = decision.get("decision")
-        confidence = decision.get("confidence", 0)
+            trade_decision = decision.get("decision")
+            confidence = decision.get("confidence", 0)
 
-        if trade_decision in ("BUY", "SELL") and confidence > 75:
-            await self._execute_trade(
-                symbol, margin_coin, leverage, mode, manual_margin,
-                trade_decision, decision, tp_pct, sl_pct
-            )
-            # 6. Monitor position
-            await self._monitor_position(symbol)
-            # Wait before next trade
-            await asyncio.sleep(3)
-        else:
-            self._emit("status", f"No trade. Decision: {trade_decision}, Confidence: {confidence}%")
-            await asyncio.sleep(15)
+            if trade_decision in ("BUY", "SELL") and confidence > 75:
+                print(f"🎯 Executing {trade_decision} trade with {confidence}% confidence")
+                await self._execute_trade(
+                    symbol, margin_coin, leverage, mode, manual_margin,
+                    trade_decision, decision, tp_pct, sl_pct
+                )
+                await self._monitor_position(symbol)
+                await asyncio.sleep(3)
+            else:
+                print(f"⏸ No trade. Decision: {trade_decision}, Confidence: {confidence}%")
+                self._emit("status", f"No trade. Decision: {trade_decision}, Confidence: {confidence}%")
+                await asyncio.sleep(15)
+            
+        except Exception as e:
+            print(f"💥 CYCLE ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     async def _execute_trade(self, symbol, margin_coin, leverage, mode, manual_margin,
                               direction, decision, tp_pct, sl_pct):
