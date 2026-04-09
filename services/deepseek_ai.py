@@ -1,11 +1,13 @@
 """
-DeepSeek AI integration - Full debug version
+DeepSeek AI integration - Forced LONG/SHORT for scalping (NO NO TRADE)
+Keep original TP/SL calculation
 """
 
 import asyncio
 import base64
 import json
 import os
+import re
 import struct
 import ctypes
 import httpx
@@ -114,7 +116,6 @@ class DeepSeekAI:
 
     async def _do_pow(self, target_path: str) -> str:
         try:
-            print(f"🔐 Requesting PoW for {target_path}...")
             resp = await self.client.post(
                 "/api/v0/chat/create_pow_challenge",
                 headers=self.headers,
@@ -123,18 +124,14 @@ class DeepSeekAI:
             data = resp.json()
             
             if data.get("code") != 0:
-                print(f"⚠️ PoW error: {data.get('msg')}")
                 return ""
             
             challenge = data.get("data", {}).get("biz_data", {}).get("challenge")
             if not challenge or not self.solver:
-                print("⚠️ No challenge or solver")
                 return ""
 
-            print(f"🔐 Solving PoW...")
             answer = self.solver.solve(challenge)
             if answer is None:
-                print("❌ Failed to solve")
                 return ""
             
             pow_dict = {
@@ -145,16 +142,12 @@ class DeepSeekAI:
                 "signature": challenge["signature"],
                 "target_path": target_path,
             }
-            pow_token = base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
-            print(f"✅ PoW solved: {answer}")
-            return pow_token
-        except Exception as e:
-            print(f"❌ PoW exception: {e}")
+            return base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
+        except Exception:
             return ""
 
     async def _ensure_session(self):
         if not self._chat_session_id:
-            print(f"🔐 Creating DeepSeek session...")
             resp = await self.client.post(
                 "/api/v0/chat_session/create",
                 headers=self.headers,
@@ -168,7 +161,6 @@ class DeepSeekAI:
             biz_data = data.get("data", {}).get("biz_data", {})
             chat_session = biz_data.get("chat_session", {})
             self._chat_session_id = chat_session.get("id")
-            print(f"✅ Session: {self._chat_session_id}")
 
     async def upload_image(self, image_base64: str, filename: str = "image.png") -> Optional[str]:
         if not image_base64:
@@ -176,9 +168,7 @@ class DeepSeekAI:
         
         try:
             image_bytes = base64.b64decode(image_base64)
-            print(f"📸 Image size: {len(image_bytes)} bytes")
-        except Exception as e:
-            print(f"❌ Decode error: {e}")
+        except Exception:
             return None
 
         pow_token = await self._do_pow("/api/v0/file/upload_file")
@@ -198,17 +188,13 @@ class DeepSeekAI:
             data = resp.json()
             
             if data.get("code") != 0:
-                print(f"❌ Upload failed: {data.get('msg')}")
                 return None
                 
             file_id = data.get("data", {}).get("biz_data", {}).get("id")
             if not file_id:
-                print(f"❌ No file_id")
                 return None
             
-            print(f"📤 File uploaded: {file_id}")
-            
-            for attempt in range(30):
+            for _ in range(30):
                 await asyncio.sleep(1)
                 poll_resp = await self.client.get(
                     "/api/v0/file/fetch_files",
@@ -220,62 +206,72 @@ class DeepSeekAI:
                 
                 if files_data:
                     status = files_data[0].get("status")
-                    print(f"  Poll {attempt+1}: {status}")
-                    
                     if status == "SUCCESS":
-                        print(f"✅ File ready!")
                         return file_id
                     elif status in ("FAILED", "ERROR"):
-                        print(f"❌ File failed")
                         return None
             
             return None
             
-        except Exception as e:
-            print(f"❌ Upload exception: {e}")
+        except Exception:
             return None
 
     async def analyze(self, ohlcv_text: str, indicators: dict, chart_image_b64: str = None) -> dict:
-        print(f"🔵 analyze() started")
-        
+        """
+        Analyze market data - FORCED to return LONG or SHORT only.
+        NO TRADE is not allowed for scalping.
+        Uses original TP/SL calculation (0.4% tp, 0.4% sl)
+        """
         await self._ensure_session()
 
+        # Upload chart image (optional)
         ref_file_ids = []
         if chart_image_b64:
-            print("📤 Uploading chart image...")
             file_id = await self.upload_image(chart_image_b64)
             if file_id:
                 ref_file_ids = [file_id]
-                print(f"✅ Chart uploaded: {file_id}")
 
+        # Extract indicators
         current_price = indicators.get('current_price', 0)
         ema9 = indicators.get('ema9_last', current_price)
         ema21 = indicators.get('ema21_last', current_price)
         rsi = indicators.get('rsi_last', 50)
         trend = indicators.get('trend', 'NEUTRAL')
         
+        # Original TP/SL calculation (0.4% for both)
         tp_long = round(current_price * 1.004, 8)
         sl_long = round(current_price * 0.996, 8)
         tp_short = round(current_price * 0.996, 8)
         sl_short = round(current_price * 1.004, 8)
 
-        prompt = f"""Analyze this crypto market data objectively.
+        # PROMPT: Force LONG or SHORT, no NO TRADE allowed
+        prompt = f"""You are a scalping trading AI. You MUST choose LONG or SHORT. NO TRADE is NOT allowed.
 
-Price: {current_price}
+Current Price: {current_price}
 EMA9: {ema9}
 EMA21: {ema21}
 RSI: {rsi}
 Trend: {trend}
 
-OHLCV:
+Recent candles (oldest to newest):
 {ohlcv_text}
 
-Respond ONLY with JSON:
-{{"decision": "LONG" or "SHORT" or "NO TRADE", "confidence": 0-100, "reason": "one sentence"}}"""
+RULES for scalping:
+- LONG if: price is above EMA21 OR RSI > 55 OR uptrend OR recent candles show higher lows
+- SHORT if: price is below EMA21 OR RSI < 45 OR downtrend OR recent candles show lower highs
+- If both signals are weak, choose based on recent price action
 
-        print(f"🔵 Getting PoW for chat...")
+You MUST respond with ONLY this JSON format. NO other text:
+{{"decision": "LONG", "confidence": 85, "reason": "price above EMA21 with bullish momentum"}}
+
+OR
+
+{{"decision": "SHORT", "confidence": 80, "reason": "RSI below 45 with bearish candles"}}
+
+CONFIDENCE must be between 60-100 (60=weak signal, 100=very strong)
+decision MUST be either "LONG" or "SHORT" - never "NO TRADE""""
+
         pow_token = await self._do_pow("/api/v0/chat/completion")
-        print(f"🔵 PoW token obtained: {pow_token[:50] if pow_token else 'EMPTY'}")
 
         comp_headers = {
             **self.headers,
@@ -292,9 +288,6 @@ Respond ONLY with JSON:
             "preempt": False,
         }
 
-        print(f"🤖 Sending request to DeepSeek...")
-        print(f"   Session: {self._chat_session_id}")
-        
         full_text = ""
 
         try:
@@ -304,17 +297,12 @@ Respond ONLY with JSON:
                 headers=comp_headers,
                 json=payload,
             ) as resp:
-                print(f"📡 Response status: {resp.status_code}")
-                
                 if resp.status_code != 200:
-                    error_text = await resp.aread()
-                    print(f"❌ HTTP Error: {error_text.decode()[:500]}")
-                    return self._default_response(current_price, f"HTTP {resp.status_code}")
+                    return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short, 
+                                                "LONG" if current_price >= ema21 else "SHORT", 
+                                                "API error, defaulting based on EMA")
                 
                 async for line in resp.aiter_lines():
-                    if line:
-                        print(f"📨 Line: {line[:100]}")
-                        
                     if not line or not line.startswith("data: "):
                         continue
                     
@@ -326,59 +314,95 @@ Respond ONLY with JSON:
                         jdata = json.loads(content)
                         if "v" in jdata and isinstance(jdata["v"], str):
                             full_text += jdata["v"]
-                            print(f"   + Chunk: {jdata['v'][:50]}")
                     except:
                         pass
 
-            print(f"📝 Full response: {full_text[:500]}")
-            
-            # Parse JSON
+            # Parse response
             try:
+                # Fix missing braces
+                if full_text and not full_text.startswith('{'):
+                    if full_text.startswith('"decision"') or full_text.startswith('decision'):
+                        full_text = '{' + full_text
+                if full_text and not full_text.endswith('}'):
+                    full_text = full_text + '}'
+                
                 start = full_text.find("{")
                 end = full_text.rfind("}") + 1
+                
                 if start >= 0 and end > start:
                     result = json.loads(full_text[start:end])
+                    decision = result.get("decision", "LONG").upper()
+                    confidence = result.get("confidence", 70)
+                    reason = result.get("reason", "AI analysis")
+                else:
+                    # Regex fallback
+                    decision_match = re.search(r'"decision"?:\s*"(LONG|SHORT)"', full_text, re.IGNORECASE)
+                    decision = decision_match.group(1).upper() if decision_match else ("LONG" if current_price >= ema21 else "SHORT")
                     
-                    if "decision" not in result:
-                        result["decision"] = "NO TRADE"
-                    if "confidence" not in result:
-                        result["confidence"] = 0
+                    conf_match = re.search(r'"confidence"?:\s*(\d+)', full_text)
+                    confidence = int(conf_match.group(1)) if conf_match else 70
                     
-                    result["entry"] = current_price
+                    reason_match = re.search(r'"reason"?:\s*"([^"]+)"', full_text)
+                    reason = reason_match.group(1) if reason_match else "Technical analysis"
+                
+                # Force decision to be LONG or SHORT
+                if decision not in ["LONG", "SHORT"]:
+                    decision = "LONG" if current_price >= ema21 else "SHORT"
+                    confidence = 65
+                    reason = f"Default: price {'above' if decision == 'LONG' else 'below'} EMA21"
+                
+                # Build response with original TP/SL
+                if decision == "LONG":
+                    return {
+                        "decision": "LONG",
+                        "entry": current_price,
+                        "tp": tp_long,
+                        "sl": sl_long,
+                        "confidence": min(100, max(60, confidence)),
+                        "reason": reason
+                    }
+                else:
+                    return {
+                        "decision": "SHORT",
+                        "entry": current_price,
+                        "tp": tp_short,
+                        "sl": sl_short,
+                        "confidence": min(100, max(60, confidence)),
+                        "reason": reason
+                    }
                     
-                    if result["decision"] == "LONG":
-                        result["tp"] = tp_long
-                        result["sl"] = sl_long
-                    elif result["decision"] == "SHORT":
-                        result["tp"] = tp_short
-                        result["sl"] = sl_short
-                    else:
-                        result["tp"] = 0
-                        result["sl"] = 0
-                    
-                    print(f"✅ Parsed: {result}")
-                    return result
-                    
-            except Exception as e:
-                print(f"❌ Parse error: {e}")
+            except Exception:
+                # Default fallback - always return LONG or SHORT
+                return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short, 
+                                            "LONG" if current_price >= ema21 else "SHORT", 
+                                            "Fallback based on EMA position")
             
-            return self._default_response(current_price, "Parse error")
-            
-        except Exception as e:
-            print(f"❌ Chat exception: {e}")
-            import traceback
-            traceback.print_exc()
-            return self._default_response(current_price, str(e))
+        except Exception:
+            return self._forced_response(current_price, tp_long, sl_long, tp_short, sl_short,
+                                        "LONG" if current_price >= ema21 else "SHORT",
+                                        "Emergency fallback")
 
-    def _default_response(self, current_price: float, reason: str) -> dict:
-        return {
-            "decision": "NO TRADE",
-            "entry": current_price,
-            "tp": 0,
-            "sl": 0,
-            "confidence": 0,
-            "reason": reason
-        }
+    def _forced_response(self, price: float, tp_long: float, sl_long: float, 
+                         tp_short: float, sl_short: float, decision: str, reason: str) -> dict:
+        """Return forced response when AI fails - never NO TRADE"""
+        if decision == "LONG":
+            return {
+                "decision": "LONG",
+                "entry": price,
+                "tp": tp_long,
+                "sl": sl_long,
+                "confidence": 65,
+                "reason": reason
+            }
+        else:
+            return {
+                "decision": "SHORT",
+                "entry": price,
+                "tp": tp_short,
+                "sl": sl_short,
+                "confidence": 65,
+                "reason": reason
+            }
 
     async def close(self):
         await self.client.aclose()
