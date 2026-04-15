@@ -2,101 +2,38 @@ import React from 'react'
 import { useStore } from '../store/useStore'
 
 export default function Header() {
-  const { botStatus, wsConnected, ticker, config, futuresBalance } = useStore()
-
-  const lastPrice = parseFloat(ticker?.lastPr || ticker?.last || 0)
-  const priceChange = parseFloat(ticker?.change24h || ticker?.priceChangePercent || 0)
-  const changeColor = priceChange >= 0 ? 'text-green-bright' : 'text-red-bright'
-  const displaySymbol = config.symbol.replace('_UMCBL', '').replace('USDT', '/USDT')
-
-  const availableBalance = parseFloat(futuresBalance.available || 0)
-  const unrealizedPL = parseFloat(futuresBalance.unrealizedPL || 0)
-  const plColor = unrealizedPL >= 0 ? 'text-green-bright' : 'text-red-bright'
+  const { botStatus, wsConnected, stats } = useStore()
+  const totalPnl = stats.total_pnl_pct || 0
 
   return (
-    <header className="flex items-center justify-between px-3 sm:px-6 py-2.5 sm:py-3 border-b border-border bg-surface sticky top-0 z-50">
-      <div className="flex items-center gap-2 sm:gap-4">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 sm:w-7 sm:h-7 bg-accent rounded flex items-center justify-center shrink-0">
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-              <path d="M2 10L5 6L8 8L12 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <circle cx="12" cy="3" r="1.5" fill="white"/>
-            </svg>
-          </div>
-          <span className="font-display font-semibold text-text text-[14px] sm:text-[15px] tracking-tight">ScalpBot</span>
+    <header className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
+      <div className="flex items-center gap-2">
+        <div className="w-6 h-6 bg-accent rounded flex items-center justify-center">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+            <path d="M2 10L5 6L8 8L12 3" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+            <circle cx="12" cy="3" r="1.5" fill="white"/>
+          </svg>
         </div>
-
-        <div className="h-4 w-px bg-border" />
-
-        <div className="flex items-center gap-1.5 sm:gap-2">
-          <span className="font-mono text-[10px] sm:text-[11px] text-text-faint">
-            {displaySymbol}
-          </span>
-          {lastPrice > 0 ? (
-            <span className="font-mono text-[11px] sm:text-[12px] text-text font-medium">
-              {lastPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
-          ) : (
-            <span className="font-mono text-[11px] text-muted">—</span>
-          )}
-          {priceChange !== 0 && (
-            <span className={`font-mono text-[10px] ${changeColor} hidden sm:inline`}>
-              {priceChange >= 0 ? '+' : ''}{(priceChange * 100).toFixed(2)}%
-            </span>
-          )}
-        </div>
+        <span className="font-display font-semibold text-text">ScalpBot Signal</span>
       </div>
 
-      <div className="flex items-center gap-3 sm:gap-4">
-        {/* Balance Display Desktop */}
-        <div className="hidden md:flex flex-col items-end">
-          <div className="flex items-center gap-2">
-            <span className="text-[9px] font-mono text-muted uppercase tracking-wider">Futures Balance</span>
-            {futuresBalance.loading ? (
-              <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <span className="font-mono text-[13px] font-semibold text-text">
-                {availableBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-              </span>
-            )}
-          </div>
-          {unrealizedPL !== 0 && (
-            <div className={`text-[9px] font-mono ${plColor}`}>
-              Unrealized PnL: {unrealizedPL >= 0 ? '+' : ''}{unrealizedPL.toFixed(2)} USDT
-            </div>
-          )}
-        </div>
-
-        {/* Balance Display Mobile */}
-        <div className="md:hidden flex items-center gap-1">
-          <span className="text-[9px] font-mono text-muted">Bal:</span>
-          <span className="font-mono text-[11px] font-semibold text-text">
-            {availableBalance.toFixed(2)}
-          </span>
-        </div>
-
+      <div className="flex items-center gap-3">
         <div className="hidden sm:flex items-center gap-2">
           <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-bright' : 'bg-muted'}`}
                style={wsConnected ? { animation: 'pulse-dot 2s infinite' } : {}} />
-          <span className="font-mono text-[11px] text-text-faint">{wsConnected ? 'CONNECTED' : 'OFFLINE'}</span>
+          <span className="font-mono text-[11px] text-text-faint">{wsConnected ? 'LIVE' : 'OFFLINE'}</span>
         </div>
 
-        <div className="hidden sm:block h-4 w-px bg-border" />
-
-        <div className={`flex items-center gap-1.5 px-2 sm:px-3 py-1 rounded text-[10px] sm:text-[11px] font-mono font-medium ${
-          botStatus === 'RUNNING'
-            ? 'bg-green-dim border border-green-dim text-green-bright'
-            : 'bg-surface border border-border text-muted'
+        <div className={`flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono ${
+          botStatus === 'RUNNING' ? 'bg-green-dim text-green-bright border border-green-dim' : 'bg-surface text-muted border border-border'
         }`}>
-          {botStatus === 'RUNNING' && (
-            <div className="w-1.5 h-1.5 rounded-full bg-green-bright" style={{ animation: 'pulse-dot 2s infinite' }} />
-          )}
-          <span className="hidden sm:inline">{botStatus}</span>
-          <span className="sm:hidden">{botStatus === 'RUNNING' ? 'LIVE' : 'IDLE'}</span>
+          {botStatus === 'RUNNING' && <div className="w-1.5 h-1.5 rounded-full bg-green-bright animate-pulse" />}
+          {botStatus}
         </div>
 
-        <div className={`sm:hidden w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-bright' : 'bg-muted'}`}
-             style={wsConnected ? { animation: 'pulse-dot 2s infinite' } : {}} />
+        <div className="text-[11px] font-mono text-text-faint">
+          PnL: <span className={totalPnl >= 0 ? 'text-green-bright' : 'text-red-bright'}>{totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(2)}%</span>
+        </div>
       </div>
     </header>
   )
