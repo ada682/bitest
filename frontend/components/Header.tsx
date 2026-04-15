@@ -10,40 +10,47 @@ interface HeaderProps {
   total?:          number;
   onStart:         () => void;
   onStop:          () => void;
-  onReset:         () => void;  // ← tambahkan ini
+  onReset:         () => void;
   running:         boolean;
+  onMenuToggle:    () => void;
 }
 
 export default function Header({
   status, currentSymbol, scanned, total,
-  onStart, onStop, onReset,  // ← tambahkan onReset
+  onStart, onStop, onReset,
   running,
+  onMenuToggle,
 }: HeaderProps) {
   const [showPinModal, setShowPinModal] = useState<"start" | "stop" | "reset" | null>(null);
 
-  const handleStartClick = () => setShowPinModal("start");
-  const handleStopClick = () => setShowPinModal("stop");
-  const handleResetClick = () => setShowPinModal("reset");  // ← tambahkan ini
-
   const handlePinSuccess = () => {
     if (showPinModal === "start") onStart();
-    if (showPinModal === "stop") onStop();
-    if (showPinModal === "reset") onReset();  // ← tambahkan ini
+    if (showPinModal === "stop")  onStop();
+    if (showPinModal === "reset") onReset();
   };
 
   return (
     <>
-      <header className="h-14 border-b border-border bg-surface/80 backdrop-blur flex items-center px-6 gap-4 sticky top-0 z-10">
+      <header className="h-14 border-b border-border bg-surface/80 backdrop-blur flex items-center px-3 sm:px-6 gap-2 sm:gap-4 sticky top-0 z-10">
+        {/* Hamburger — mobile only */}
+        <button
+          onClick={onMenuToggle}
+          className="lg:hidden p-2 rounded-lg text-muted hover:text-text hover:bg-white/5 transition-colors"
+          aria-label="Open menu"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+
         <StatusDot status={status} />
 
         {running && currentSymbol && (
-          <div className="flex items-center gap-2 text-xs text-muted font-mono">
+          <div className="hidden sm:flex items-center gap-2 text-xs text-muted font-mono">
             <span className="text-subtle">Scanning</span>
             <span className="text-text font-medium">{currentSymbol}</span>
             {total ? (
-              <span className="text-muted/60">
-                {scanned}/{total}
-              </span>
+              <span className="text-muted/60">{scanned}/{total}</span>
             ) : null}
           </div>
         )}
@@ -51,28 +58,37 @@ export default function Header({
         <div className="flex-1" />
 
         {/* Controls */}
-        <div className="flex items-center gap-2">
-          {/* Reset button - always visible */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
           <button
-            onClick={handleResetClick}
-            className="px-3 py-1.5 text-xs font-medium text-warning border border-warning/30 hover:bg-warning/10 rounded-lg transition-colors"
+            onClick={() => setShowPinModal("reset")}
+            className="px-2 sm:px-3 py-1.5 text-xs font-medium text-warning border border-warning/30 hover:bg-warning/10 rounded-lg transition-colors"
           >
-            Reset Stats
+            <span className="hidden sm:inline">Reset Stats</span>
+            <svg className="sm:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
 
           {running ? (
             <button
-              onClick={handleStopClick}
-              className="px-3 py-1.5 text-xs font-medium text-danger border border-danger/30 hover:bg-danger/10 rounded-lg transition-colors"
+              onClick={() => setShowPinModal("stop")}
+              className="px-2 sm:px-3 py-1.5 text-xs font-medium text-danger border border-danger/30 hover:bg-danger/10 rounded-lg transition-colors"
             >
-              Stop Bot
+              <span className="hidden sm:inline">Stop Bot</span>
+              <svg className="sm:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           ) : (
             <button
-              onClick={handleStartClick}
-              className="px-3 py-1.5 text-xs font-medium text-bg bg-accent hover:bg-accent/90 rounded-lg transition-colors font-semibold"
+              onClick={() => setShowPinModal("start")}
+              className="px-2 sm:px-3 py-1.5 text-xs font-medium text-bg bg-accent hover:bg-accent/90 rounded-lg transition-colors font-semibold"
             >
-              Start Bot
+              <span className="hidden sm:inline">Start Bot</span>
+              <svg className="sm:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M5 13l4 4L19 7" />
+              </svg>
             </button>
           )}
         </div>
