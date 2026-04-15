@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import clsx from "clsx";
 import { verifyPin } from "@/lib/api";
 
@@ -7,7 +7,7 @@ interface PinModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
-  action: "start" | "stop";
+  action: "start" | "stop" | "reset";
 }
 
 export default function PinModal({ isOpen, onClose, onSuccess, action }: PinModalProps) {
@@ -63,6 +63,36 @@ export default function PinModal({ isOpen, onClose, onSuccess, action }: PinModa
     if (e.key === "Escape") onClose();
   };
 
+  // Action-specific colors and text
+  const actionConfig = {
+    start: {
+      title: "Start Bot",
+      description: "Enter PIN to start scanning",
+      buttonText: "Confirm Start",
+      iconPath: "M5 13l4 4L19 7",
+      iconColor: "text-accent",
+      buttonColor: "bg-accent hover:bg-accent/90",
+    },
+    stop: {
+      title: "Stop Bot",
+      description: "Enter PIN to stop the bot",
+      buttonText: "Confirm Stop",
+      iconPath: "M6 18L18 6M6 6l12 12",
+      iconColor: "text-danger",
+      buttonColor: "bg-danger hover:bg-danger/90",
+    },
+    reset: {
+      title: "Reset Stats",
+      description: "Enter PIN to reset all statistics",
+      buttonText: "Confirm Reset",
+      iconPath: "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15",
+      iconColor: "text-warning",
+      buttonColor: "bg-warning hover:bg-warning/90 text-bg",
+    },
+  };
+
+  const config = actionConfig[action];
+
   if (!isOpen) return null;
 
   return (
@@ -87,19 +117,19 @@ export default function PinModal({ isOpen, onClose, onSuccess, action }: PinModa
           {/* Header */}
           <div className="px-6 py-4 border-b border-border bg-surface/50">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center">
-                <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              <div className={clsx(
+                "w-8 h-8 rounded-full border flex items-center justify-center",
+                action === "start" && "bg-accent/10 border-accent/20",
+                action === "stop" && "bg-danger/10 border-danger/20",
+                action === "reset" && "bg-warning/10 border-warning/20",
+              )}>
+                <svg className={clsx("w-4 h-4", config.iconColor)} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d={config.iconPath} />
                 </svg>
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-text">
-                  {action === "start" ? "Start Bot" : "Stop Bot"}
-                </h3>
-                <p className="text-[10px] text-muted mt-0.5">
-                  Enter PIN to {action === "start" ? "start scanning" : "stop the bot"}
-                </p>
+                <h3 className="text-sm font-semibold text-text">{config.title}</h3>
+                <p className="text-[10px] text-muted mt-0.5">{config.description}</p>
               </div>
             </div>
           </div>
@@ -153,7 +183,7 @@ export default function PinModal({ isOpen, onClose, onSuccess, action }: PinModa
                 disabled={loading}
                 className={clsx(
                   "flex-1 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200",
-                  "bg-accent hover:bg-accent/90 text-bg",
+                  config.buttonColor,
                   loading && "opacity-70 cursor-not-allowed"
                 )}
               >
@@ -166,24 +196,13 @@ export default function PinModal({ isOpen, onClose, onSuccess, action }: PinModa
                     Verifying...
                   </span>
                 ) : (
-                  `Confirm ${action === "start" ? "Start" : "Stop"}`
+                  config.buttonText
                 )}
               </button>
             </div>
           </form>
         </div>
       </div>
-
-      <style jsx>{`
-        @keyframes shake {
-          0%, 100% { transform: translateX(0); }
-          10%, 30%, 50%, 70%, 90% { transform: translateX(-2px); }
-          20%, 40%, 60%, 80% { transform: translateX(2px); }
-        }
-        .animate-shake {
-          animation: shake 0.5s ease-in-out;
-        }
-      `}</style>
     </>
   );
 }
