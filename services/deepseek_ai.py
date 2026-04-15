@@ -313,9 +313,9 @@ class DeepSeekAI:
             candles = candles_by_tf.get(tf, [])
             if not candles:
                 continue
-            lines = [f"=== {symbol} | {tf} (last {min(len(candles), 50)} candles) ==="]
+            lines = [f"=== {symbol} | {tf} (last {min(len(candles), 150)} candles) ==="]
             lines.append("timestamp, open, high, low, close, volume")
-            for c in candles[-50:]:
+            for c in candles[-150:]:
                 lines.append(f"{c[0]}, {c[1]}, {c[2]}, {c[3]}, {c[4]}, {c[5]}")
             tf_blocks.append("\n".join(lines))
             if candles:
@@ -344,6 +344,7 @@ You MUST respond in this EXACT JSON format ONLY — no extra text:
   "entry": <entry price as float, or null if NO TRADE>,
   "tp": <take profit price as float, or null if NO TRADE>,
   "sl": <stop loss price as float, or null if NO TRADE>,
+  "invalidation": <price level where the setup is COMPLETELY INVALID and signal must be deleted — for LONG: a key support level BELOW sl where structure breaks; for SHORT: a key resistance level ABOVE sl where structure breaks; null if NO TRADE>,
   "reason": "short explanation referencing the void/wick imbalance",
   "confidence": <integer 0-100>
 }}
@@ -470,14 +471,15 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
                 decision = "NO TRADE"
 
             parsed = {
-                "trend":      result.get("trend", "SIDEWAYS"),
-                "pattern":    result.get("pattern", ""),
-                "decision":   decision,
-                "entry":      result.get("entry"),
-                "tp":         result.get("tp"),
-                "sl":         result.get("sl"),
-                "reason":     result.get("reason", ""),
-                "confidence": int(result.get("confidence", 0)),
+                "trend":        result.get("trend", "SIDEWAYS"),
+                "pattern":      result.get("pattern", ""),
+                "decision":     decision,
+                "entry":        result.get("entry"),
+                "tp":           result.get("tp"),
+                "sl":           result.get("sl"),
+                "invalidation": result.get("invalidation"),   # level hapus signal
+                "reason":       result.get("reason", ""),
+                "confidence":   int(result.get("confidence", 0)),
             }
             logger.info(
                 f"{tag} ✅ Parsed signal for {symbol}: "
