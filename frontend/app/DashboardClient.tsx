@@ -33,12 +33,12 @@ const EMPTY_STATE: Partial<BotState> = {
 };
 
 export default function DashboardClient() {
-  const [view,    setView]    = useState<View>("dashboard");
-  const [state,   setState]   = useState<Partial<BotState>>(EMPTY_STATE);
-  const [loading, setLoading] = useState(true);
-  const flashRef              = useRef<Set<string>>(new Set());
+  const [view,        setView]        = useState<View>("dashboard");
+  const [state,       setState]       = useState<Partial<BotState>>(EMPTY_STATE);
+  const [loading,     setLoading]     = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const flashRef                      = useRef<Set<string>>(new Set());
 
-  // Load state on mount (provides global signals immediately)
   useEffect(() => {
     fetchBotState()
       .then((s) => setState(s))
@@ -46,7 +46,6 @@ export default function DashboardClient() {
       .finally(() => setLoading(false));
   }, []);
 
-  // WebSocket handler
   const handleWs = useCallback((msg: WsEvent) => {
     if (msg.event === "signal") {
       const sig = msg.data as Signal;
@@ -70,9 +69,9 @@ export default function DashboardClient() {
         const signals = (prev.signals ?? []).map((s) =>
           s.id === closed.id ? closed : s
         );
-        const wins    = (prev.win_count  ?? 0) + (closed.result === "TP" ? 1 : 0);
-        const losses  = (prev.loss_count ?? 0) + (closed.result === "SL" ? 1 : 0);
-        const total   = wins + losses;
+        const wins   = (prev.win_count  ?? 0) + (closed.result === "TP" ? 1 : 0);
+        const losses = (prev.loss_count ?? 0) + (closed.result === "SL" ? 1 : 0);
+        const total  = wins + losses;
         return {
           ...prev,
           signals,
@@ -84,13 +83,6 @@ export default function DashboardClient() {
       });
     }
 
-    if (msg.event === "status") {
-      setState((prev) => ({
-        ...prev,
-        status: prev.status === "RUNNING" ? "RUNNING" : prev.status,
-      }));
-    }
-
     if (msg.event === "reset_all") {
       setState((prev) => ({ ...prev, ...EMPTY_STATE, status: prev.status ?? "IDLE" }));
     }
@@ -98,7 +90,6 @@ export default function DashboardClient() {
 
   useWebSocket(handleWs);
 
-  // Controls
   const handleStart = useCallback(async () => {
     await startBot({ interval: 300 });
     setState((p) => ({ ...p, status: "RUNNING" }));
@@ -121,10 +112,15 @@ export default function DashboardClient() {
 
   return (
     <div className="flex min-h-screen bg-bg">
-      <Sidebar active={view} onChange={setView} />
+      <Sidebar
+        active={view}
+        onChange={setView}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
 
-      {/* Main area */}
-      <div className="flex-1 flex flex-col ml-56">
+      {/* Main area — on desktop offset by sidebar width, on mobile full width */}
+      <div className="flex-1 flex flex-col lg:ml-56 min-w-0">
         <Header
           status={state.status ?? "IDLE"}
           currentSymbol={state.current_symbol}
@@ -134,15 +130,15 @@ export default function DashboardClient() {
           onStop={handleStop}
           onReset={handleReset}
           running={running}
+          onMenuToggle={() => setSidebarOpen((o) => !o)}
         />
 
         <LiveTicker signals={signals} />
 
-        {/* ——————————————————— DASHBOARD VIEW ——————————————————— */}
+        {/* ——— DASHBOARD VIEW ——— */}
         {view === "dashboard" && (
-          <div className="flex-1 p-6 flex flex-col gap-5 overflow-auto">
+          <div className="flex-1 p-3 sm:p-6 flex flex-col gap-4 sm:gap-5 overflow-auto">
 
-            {/* Scan progress */}
             <ScanProgress
               scanned={state.symbols_scanned ?? 0}
               total={state.symbols_total     ?? 0}
@@ -150,8 +146,8 @@ export default function DashboardClient() {
               visible={running}
             />
 
-            {/* Stat cards */}
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            {/* Stat cards — 2 cols on mobile, 5 on desktop */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
               <StatCard
                 label="Total Trades"
                 value={state.trade_count ?? 0}
@@ -182,17 +178,18 @@ export default function DashboardClient() {
               <StatCard
                 label="No Trade"
                 value={state.no_trade_count ?? 0}
-                sub="filtered signals"
+                sub="filtered"
                 loading={loading}
+                className="col-span-2 sm:col-span-1"
               />
             </div>
 
-            {/* Main 2-col layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            {/* Main layout — stacked on mobile, 3-col on desktop */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
 
-              {/* Left: recent signals table */}
+              {/* Signal table */}
               <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
+                <div className="px-4 sm:px-5 py-3.5 border-b border-border flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-text">Recent Signals</h2>
                   <span className="text-[11px] font-mono text-muted">
                     {signals.filter((s) => s.decision !== "NO TRADE").length} actionable
@@ -204,11 +201,11 @@ export default function DashboardClient() {
                 />
               </div>
 
-              {/* Right: AI signal + W/L donut */}
-              <div className="flex flex-col gap-5">
+              {/* Right panel */}
+              <div className="flex flex-col gap-4 sm:gap-5">
 
                 {/* Latest AI signal */}
-                <div className="bg-card border border-border rounded-xl p-5">
+                <div className="bg-card border border-border rounded-xl p-4 sm:p-5">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-sm font-semibold text-text">Latest Signal</h2>
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-accent/10 text-accent border border-accent/20 uppercase tracking-wide">
@@ -218,8 +215,8 @@ export default function DashboardClient() {
                   <SignalPanel signal={state.last_signal ?? null} />
                 </div>
 
-                {/* W/L distribution */}
-                <div className="bg-card border border-border rounded-xl p-5">
+                {/* W/L donut */}
+                <div className="bg-card border border-border rounded-xl p-4 sm:p-5">
                   <h2 className="text-sm font-semibold text-text mb-4">W/L Distribution</h2>
                   <WinLossDonut
                     wins={state.win_count   ?? 0}
@@ -230,7 +227,7 @@ export default function DashboardClient() {
             </div>
 
             {/* PnL chart */}
-            <div className="bg-card border border-border rounded-xl p-5">
+            <div className="bg-card border border-border rounded-xl p-4 sm:p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold text-text">Cumulative PnL</h2>
                 <span className={`text-xs font-mono ${pnlColor === "success" ? "text-success" : "text-danger"}`}>
@@ -243,11 +240,11 @@ export default function DashboardClient() {
           </div>
         )}
 
-        {/* ——————————————————— HISTORY VIEW ——————————————————— */}
+        {/* ——— HISTORY VIEW ——— */}
         {view === "history" && (
-          <div className="flex-1 p-6 overflow-auto">
+          <div className="flex-1 p-3 sm:p-6 overflow-auto">
             <div className="bg-card border border-border rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+              <div className="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-0 sm:justify-between">
                 <div>
                   <h2 className="text-sm font-semibold text-text">Signal History</h2>
                   <p className="text-[11px] text-muted mt-0.5">
@@ -261,9 +258,8 @@ export default function DashboardClient() {
                 </div>
               </div>
 
-              {/* PnL summary */}
               {closedSigs.length > 0 && (
-                <div className="px-5 py-4 border-b border-border">
+                <div className="px-4 sm:px-5 py-4 border-b border-border">
                   <PnlChart signals={signals} />
                 </div>
               )}
