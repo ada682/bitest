@@ -1,63 +1,63 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { useStore } from '../store/useStore'
-import StatCard from '../components/StatCard'
-import SignalPanel from '../components/SignalPanel'
-import PositionPanel from '../components/PositionPanel'
-import ProfitChart from '../components/ProfitChart'
-import CandleChart from '../components/CandleChart'
+import SignalList from '../components/SignalList'
 
 export default function Dashboard() {
-  const { summary, totalPnl, tradeCount, winCount, lossCount } = useStore()
+  const { stats, botStatus, statusMessage, fetchStats, fetchSignals, initWs, fetchBotState } = useStore()
 
-  const wins = summary?.wins ?? winCount
-  const losses = summary?.losses ?? lossCount
-  const total = summary?.total_trades ?? tradeCount
-  const winrate = total > 0 ? ((wins / total) * 100).toFixed(1) : '—'
-  const realPnl = summary?.total_pnl ?? totalPnl
-  const avgProfit = summary?.avg_profit ?? (total > 0 ? (realPnl / total).toFixed(4) : 0)
+  useEffect(() => {
+    initWs()
+    fetchBotState()
+    fetchStats()
+    fetchSignals(200)
+    const interval = setInterval(() => {
+      fetchStats()
+      fetchSignals(200)
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const winrate = stats.winrate || 0
+  const totalTrades = stats.trade_count || 0
+  const wins = stats.win_count || 0
+  const losses = stats.loss_count || 0
+  const totalPnl = stats.total_pnl_pct || 0
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Stats row — 2 cols on mobile, 5 on desktop */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
-        <StatCard
-          label="Total PnL"
-          value={`${realPnl >= 0 ? '+' : ''}${parseFloat(realPnl).toFixed(4)}`}
-          sub="USDT"
-          color={realPnl >= 0 ? 'green' : 'red'}
-          mono
-        />
-        <StatCard label="Total Trades" value={total || 0} sub="executed" />
-        <StatCard label="Win Rate" value={winrate === '—' ? '—' : `${winrate}%`}
-                  color={parseFloat(winrate) >= 50 ? 'green' : 'red'} />
-        <StatCard
-          label="Avg Profit"
-          value={`${parseFloat(avgProfit) >= 0 ? '+' : ''}${parseFloat(avgProfit).toFixed(4)}`}
-          sub="per trade"
-          color={parseFloat(avgProfit) >= 0 ? 'green' : 'red'}
-          mono
-        />
-        <StatCard
-          label="W / L"
-          value={`${wins} / ${losses}`}
-          sub="wins vs losses"
-          className="col-span-2 sm:col-span-1"
-        />
+    <div className="flex flex-col gap-5">
+      {/* Header statistik */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="stat-card">
+          <div className="text-[10px] font-mono text-muted uppercase">Bot Status</div>
+          <div className={`text-lg font-display font-semibold ${botStatus === 'RUNNING' ? 'text-green-bright' : 'text-muted'}`}>
+            {botStatus}
+          </div>
+          {statusMessage && <div className="text-[10px] text-text-faint mt-1">{statusMessage}</div>}
+        </div>
+        <div className="stat-card">
+          <div className="text-[10px] font-mono text-muted uppercase">Total Trades</div>
+          <div className="text-xl font-display font-semibold text-text">{totalTrades}</div>
+        </div>
+        <div className="stat-card">
+          <div className="text-[10px] font-mono text-muted uppercase">Win Rate</div>
+          <div className={`text-xl font-display font-semibold ${winrate >= 50 ? 'text-green-bright' : 'text-red-bright'}`}>
+            {winrate.toFixed(1)}%
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="text-[10px] font-mono text-muted uppercase">Total PnL %</div>
+          <div className={`text-xl font-display font-semibold ${totalPnl >= 0 ? 'text-green-bright' : 'text-red-bright'}`}>
+            {totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(2)}%
+          </div>
+        </div>
       </div>
 
-      {/* Main grid — stacked on mobile, 3-col on desktop */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Charts — full width on mobile, 2 cols on desktop */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-          <CandleChart />
-          <ProfitChart />
+      {/* Daftar sinyal */}
+      <div className="panel p-4">
+        <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-3">
+          Live AI Signals (LONG/SHORT)
         </div>
-
-        {/* Signal + Position — full width on mobile */}
-        <div className="flex flex-col gap-4">
-          <SignalPanel />
-          <PositionPanel />
-        </div>
+        <SignalList />
       </div>
     </div>
   )
