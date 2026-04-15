@@ -10,21 +10,25 @@ interface HeaderProps {
   total?:          number;
   onStart:         () => void;
   onStop:          () => void;
+  onReset:         () => void;  // ← tambahkan ini
   running:         boolean;
 }
 
 export default function Header({
   status, currentSymbol, scanned, total,
-  onStart, onStop, running,
+  onStart, onStop, onReset,  // ← tambahkan onReset
+  running,
 }: HeaderProps) {
-  const [showPinModal, setShowPinModal] = useState<"start" | "stop" | null>(null);
+  const [showPinModal, setShowPinModal] = useState<"start" | "stop" | "reset" | null>(null);
 
   const handleStartClick = () => setShowPinModal("start");
   const handleStopClick = () => setShowPinModal("stop");
+  const handleResetClick = () => setShowPinModal("reset");  // ← tambahkan ini
 
   const handlePinSuccess = () => {
     if (showPinModal === "start") onStart();
     if (showPinModal === "stop") onStop();
+    if (showPinModal === "reset") onReset();  // ← tambahkan ini
   };
 
   return (
@@ -48,6 +52,14 @@ export default function Header({
 
         {/* Controls */}
         <div className="flex items-center gap-2">
+          {/* Reset button - always visible */}
+          <button
+            onClick={handleResetClick}
+            className="px-3 py-1.5 text-xs font-medium text-warning border border-warning/30 hover:bg-warning/10 rounded-lg transition-colors"
+          >
+            Reset Stats
+          </button>
+
           {running ? (
             <button
               onClick={handleStopClick}
