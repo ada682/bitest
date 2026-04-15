@@ -2,11 +2,12 @@
 import clsx from "clsx";
 
 interface StatCardProps {
-  label:     string;
-  value:     string | number;
-  sub?:      string;
-  color?:    "default" | "success" | "danger" | "warning" | "accent";
-  loading?:  boolean;
+  label:      string;
+  value:      string | number;
+  sub?:       string;
+  color?:     "default" | "success" | "danger" | "warning" | "accent";
+  loading?:   boolean;
+  className?: string;
 }
 
 const colorMap = {
@@ -18,22 +19,22 @@ const colorMap = {
 };
 
 export default function StatCard({
-  label, value, sub, color = "default", loading,
+  label, value, sub, color = "default", loading, className,
 }: StatCardProps) {
   return (
-    <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-1 min-w-0">
-      <span className="text-[11px] font-medium tracking-widest uppercase text-muted select-none">
+    <div className={clsx("bg-card border border-border rounded-xl p-3 sm:p-4 flex flex-col gap-1 min-w-0", className)}>
+      <span className="text-[10px] sm:text-[11px] font-medium tracking-widest uppercase text-muted select-none truncate">
         {label}
       </span>
       {loading ? (
-        <div className="h-7 w-24 bg-border rounded animate-pulse mt-1" />
+        <div className="h-6 sm:h-7 w-20 bg-border rounded animate-pulse mt-1" />
       ) : (
-        <span className={clsx("text-2xl font-semibold leading-tight font-mono tabular-nums", colorMap[color])}>
+        <span className={clsx("text-xl sm:text-2xl font-semibold leading-tight font-mono tabular-nums", colorMap[color])}>
           {value}
         </span>
       )}
       {sub && !loading && (
-        <span className="text-[11px] text-muted mt-0.5">{sub}</span>
+        <span className="text-[10px] sm:text-[11px] text-muted mt-0.5 truncate">{sub}</span>
       )}
     </div>
   );
