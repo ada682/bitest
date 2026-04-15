@@ -1,86 +1,95 @@
-from fastapi import APIRouter
-from services.bitget_client import bitget
+"""
+History routes — signal-only app (no Bitget, no auto-trade).
+All history comes from the persisted signals.json via bot_engine state.
+"""
+
+import json
+from pathlib import Path
+from fastapi import APIRouter, Request
 
 router = APIRouter()
 
-
-@router.get("/positions/{symbol}")
-async def get_history_positions(symbol: str, page_size: int = 50):
-    data = await bitget.get_history_positions(symbol, "USDT", page_size)
-    return {"data": data}
+SIGNALS_FILE = Path("signals.json")
 
 
-@router.get("/pnl/{symbol}")
-async def get_pnl_history(symbol: str, page_size: int = 100):
-    data = await bitget.get_account_bill(symbol, "USDT", page_size=page_size)
-    return {"data": data}
+def _load_signals() -> list:
+    try:
+        if SIGNALS_FILE.exists():
+            return json.loads(SIGNALS_FILE.read_text())
+    except Exception:
+        pass
+    return []
 
 
-@router.get("/summary/{symbol}")
-async def get_summary(symbol: str):
-    positions = await bitget.get_history_positions(symbol, "USDT", 200)
+def _pnl(s):
+    return float(s.get("pnl_pct") or 0)
 
-    total_trades = len(positions)
-    def _pnl(p):
-        return float(p.get("pnl") or p.get("achievedProfits") or p.get("netProfit") or 0)
 
-    wins = [p for p in positions if _pnl(p) > 0]
-    losses = [p for p in positions if _pnl(p) < 0]
-    total_pnl = sum(_pnl(p) for p in positions)
-    winrate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
-    avg_profit = total_pnl / total_trades if total_trades > 0 else 0
+@router.get("/signals")
+async def get_signal_history(limit: int = 100):
+    """Return all persisted signals (newest first)."""
+    signals = _load_signals()
+    return {"data": signals[:limit], "total": len(signals)}
+
+
+@router.get("/signals/{symbol}")
+async def get_signal_history_by_symbol(symbol: str, limit: int = 100):
+    """Return signals filtered by symbol."""
+    signals = [s for s in _load_signals() if s.get("symbol") == symbol]
+    return {"data": signals[:limit], "total": len(signals)}
+
+
+@router.get("/summary")
+async def get_summary_all():
+    """Win/loss summary across ALL signals."""
+    signals = _load_signals()
+
+    closed   = [s for s in signals if s.get("result") in ("TP", "SL")]
+    wins     = [s for s in closed  if s.get("result") == "TP"]
+    losses   = [s for s in closed  if s.get("result") == "SL"]
+    no_trade = [s for s in signals if s.get("status") == "NO TRADE"]
+    open_sig = [s for s in signals if s.get("status") == "OPEN"]
+
+    total_pnl = sum(_pnl(s) for s in closed)
+    winrate   = round(len(wins) / len(closed) * 100, 2) if closed else 0.0
+    avg_pnl   = round(total_pnl / len(closed), 4) if closed else 0.0
 
     return {
         "data": {
-            "total_trades": total_trades,
-            "wins": len(wins),
-            "losses": len(losses),
-            "total_pnl": round(total_pnl, 4),
-            "winrate": round(winrate, 2),
-            "avg_profit": round(avg_profit, 4),
+            "total_signals":  len(signals),
+            "closed_trades":  len(closed),
+            "open_signals":   len(open_sig),
+            "no_trade_count": len(no_trade),
+            "wins":           len(wins),
+            "losses":         len(losses),
+            "winrate":        winrate,
+            "total_pnl_pct":  round(total_pnl, 4),
+            "avg_pnl_pct":    avg_pnl,
         }
     }
 
-@router.get("/positions/all")
-async def get_all_history_positions(page_size: int = 100):
-    """Return closed positions for ALL symbols (no symbol filter)."""
-    params = {"productType": "USDT-FUTURES", "limit": str(page_size)}
-    from services.bitget_client import bitget as _bitget
-    resp = await _bitget.get("/api/v2/mix/position/history-position", params)
-    data = resp.get("data")
-    if isinstance(data, dict):
-        result = data.get("list") or []
-    else:
-        result = data or []
-    return {"data": result}
 
+@router.get("/summary/{symbol}")
+async def get_summary_by_symbol(symbol: str):
+    """Win/loss summary for a specific symbol."""
+    signals = [s for s in _load_signals() if s.get("symbol") == symbol]
 
-@router.get("/summary/all")
-async def get_summary_all(page_size: int = 200):
-    """Return win/loss summary across ALL symbols."""
-    from services.bitget_client import bitget as _bitget
-    params = {"productType": "USDT-FUTURES", "limit": str(page_size)}
-    resp = await _bitget.get("/api/v2/mix/position/history-position", params)
-    data = resp.get("data")
-    positions = (data.get("list") if isinstance(data, dict) else data) or []
+    closed  = [s for s in signals if s.get("result") in ("TP", "SL")]
+    wins    = [s for s in closed  if s.get("result") == "TP"]
+    losses  = [s for s in closed  if s.get("result") == "SL"]
 
-    def _pnl(p):
-        return float(p.get("pnl") or p.get("achievedProfits") or p.get("netProfit") or 0)
-
-    total_trades = len(positions)
-    wins = [p for p in positions if _pnl(p) > 0]
-    losses = [p for p in positions if _pnl(p) < 0]
-    total_pnl = sum(_pnl(p) for p in positions)
-    winrate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
-    avg_profit = total_pnl / total_trades if total_trades > 0 else 0
+    total_pnl = sum(_pnl(s) for s in closed)
+    winrate   = round(len(wins) / len(closed) * 100, 2) if closed else 0.0
+    avg_pnl   = round(total_pnl / len(closed), 4) if closed else 0.0
 
     return {
         "data": {
-            "total_trades": total_trades,
-            "wins": len(wins),
-            "losses": len(losses),
-            "total_pnl": round(total_pnl, 4),
-            "winrate": round(winrate, 2),
-            "avg_profit": round(avg_profit, 4),
+            "symbol":        symbol,
+            "closed_trades": len(closed),
+            "wins":          len(wins),
+            "losses":        len(losses),
+            "winrate":       winrate,
+            "total_pnl_pct": round(total_pnl, 4),
+            "avg_pnl_pct":   avg_pnl,
         }
     }
