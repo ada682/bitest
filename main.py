@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from routes import trading, bot, market, history
+from routes import bot, market
 from services.bot_engine import BotEngine
 
 bot_engine = BotEngine()
@@ -28,10 +28,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
 app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
 app.include_router(market.router, prefix="/api/market", tags=["market"])
-app.include_router(history.router, prefix="/api/history", tags=["history"])
 
 @app.get("/api/health")
 async def health():
@@ -39,4 +37,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
