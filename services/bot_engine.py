@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 TIMEFRAMES   = ["5m", "15m", "30m", "1h", "4h"]
-CANDLE_LIMIT = 60
+CANDLE_LIMIT = 150
 
 SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
 MAX_SIGNALS  = 500   # keep last N actionable signals on disk
@@ -410,6 +410,7 @@ class BotEngine:
             "entry":         signal.get("entry"),
             "tp":            signal.get("tp"),
             "sl":            signal.get("sl"),
+            "invalidation":  signal.get("invalidation"),   # level harga → signal auto-hapus
             "reason":        signal.get("reason"),
             "confidence":    signal.get("confidence"),
             "status":        "OPEN",
@@ -473,6 +474,7 @@ class BotEngine:
         entry     = signal.get("entry") or signal.get("current_price")
         tp        = signal.get("tp")
         sl        = signal.get("sl")
+        inv_price = signal.get("invalidation")   # level invalidasi dari AI
 
         if not tp or not sl:
             return
@@ -490,6 +492,34 @@ class BotEngine:
             except Exception:
                 continue
 
+            # ── Cek invalidasi (auto-hapus signal) ──────────────────────
+            if inv_price and inv_price > 0:
+                inv_hit = (
+                    (direction == "LONG"  and price <= inv_price) or
+                    (direction == "SHORT" and price >= inv_price)
+                )
+                if inv_hit:
+                    # Hapus signal dari list & disk
+                    self.state["signals"] = [
+                        s for s in self.state["signals"] if s["id"] != sig_id
+                    ]
+                    # Kembalikan counter agar statistik tidak bias
+                    self.state["trade_count"]        = max(0, self.state["trade_count"] - 1)
+                    self.state["daily_signal_count"] = max(0, self.state["daily_signal_count"] - 1)
+                    _save_signals(self.state["signals"])
+                    self._emit("signal_invalidated", {
+                        "id":           sig_id,
+                        "symbol":       symbol,
+                        "price":        price,
+                        "inv_price":    inv_price,
+                        "direction":    direction,
+                        "timestamp":    int(time.time() * 1000),
+                    })
+                    print(f"  ❌ Signal {sig_id} ({symbol} {direction}) "
+                          f"INVALIDATED @ {price} | inv_level={inv_price} — dihapus otomatis")
+                    break
+
+            # ── Cek TP / SL ─────────────────────────────────────────────
             hit = None
             if direction == "LONG":
                 if price >= tp:   hit = "TP"
