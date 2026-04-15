@@ -23,6 +23,58 @@ function PnlCell({ pnl }: { pnl: number | null | undefined }) {
   );
 }
 
+// Mobile card view for each signal row
+function SignalCard({ s }: { s: Signal }) {
+  return (
+    <div className="px-4 py-3 border-b border-border/30 last:border-0">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-mono font-medium text-text">
+            {s.symbol.replace("_USDT", "")}<span className="text-muted">/USDT</span>
+          </span>
+          <DecisionBadge decision={s.decision} />
+          {s.result && <ResultBadge result={s.result} />}
+        </div>
+        <PnlCell pnl={s.pnl_pct} />
+      </div>
+
+      <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-[11px]">
+        <div>
+          <span className="text-muted block">Entry</span>
+          <span className="font-mono text-subtle">
+            {s.entry ? `$${fmt(s.entry, 6)}` : `$${fmt(s.current_price, 6)}`}
+          </span>
+        </div>
+        <div>
+          <span className="text-muted block">TP</span>
+          <span className="font-mono text-success/80">{s.tp ? `$${fmt(s.tp, 6)}` : "—"}</span>
+        </div>
+        <div>
+          <span className="text-muted block">SL</span>
+          <span className="font-mono text-danger/80">{s.sl ? `$${fmt(s.sl, 6)}` : "—"}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-muted/60">
+        <span className={clsx(
+          s.status === "OPEN"     && "text-warning",
+          s.status === "CLOSED"   && "text-subtle",
+          s.status === "NO TRADE" && "text-muted/50",
+        )}>
+          {s.status}
+          {s.confidence != null ? ` · ${s.confidence}% conf` : ""}
+        </span>
+        <span>
+          {new Date(s.timestamp).toLocaleString("en-US", {
+            month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", hour12: false,
+          })}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 const COLS = [
   { key: "time",     label: "Time",     w: "w-24"  },
   { key: "symbol",   label: "Pair",     w: "w-28"  },
@@ -37,116 +89,119 @@ const COLS = [
 ];
 
 export default function SignalTable({ signals, loading }: Props) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs border-collapse">
-        <thead>
-          <tr className="border-b border-border">
-            {COLS.map((c) => (
-              <th
-                key={c.key}
-                className={clsx(
-                  "text-left py-2.5 px-3 text-[10px] font-medium uppercase tracking-widest text-muted whitespace-nowrap",
-                  c.w,
-                )}
-              >
-                {c.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {loading && (
-            Array.from({ length: 6 }).map((_, i) => (
-              <tr key={i} className="border-b border-border/40">
+  if (loading) {
+    return (
+      <div>
+        {/* Mobile skeleton */}
+        <div className="sm:hidden">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="px-4 py-3 border-b border-border/30">
+              <div className="flex justify-between mb-2">
+                <div className="h-4 w-24 bg-border rounded animate-pulse" />
+                <div className="h-4 w-16 bg-border rounded animate-pulse" />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                {[0,1,2].map(j => <div key={j} className="h-8 bg-border/60 rounded animate-pulse" />)}
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Desktop skeleton */}
+        <div className="hidden sm:block overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-border">
                 {COLS.map((c) => (
-                  <td key={c.key} className="py-3 px-3">
-                    <div className="h-3 bg-border/60 rounded animate-pulse" style={{ width: "70%" }} />
-                  </td>
+                  <th key={c.key} className={clsx("text-left py-2.5 px-3 text-[10px] font-medium uppercase tracking-widest text-muted whitespace-nowrap", c.w)}>
+                    {c.label}
+                  </th>
                 ))}
               </tr>
-            ))
-          )}
+            </thead>
+            <tbody>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <tr key={i} className="border-b border-border/40">
+                  {COLS.map((c) => (
+                    <td key={c.key} className="py-3 px-3">
+                      <div className="h-3 bg-border/60 rounded animate-pulse" style={{ width: "70%" }} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
 
-          {!loading && signals.length === 0 && (
-            <tr>
-              <td colSpan={COLS.length} className="py-12 text-center text-muted font-mono text-xs">
-                No signals yet. Start the bot to begin scanning.
-              </td>
+  if (signals.length === 0) {
+    return (
+      <div className="py-12 text-center text-muted font-mono text-xs">
+        No signals yet. Start the bot to begin scanning.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {/* Mobile card list */}
+      <div className="sm:hidden">
+        {signals.map((s) => <SignalCard key={s.id} s={s} />)}
+      </div>
+
+      {/* Desktop table */}
+      <div className="hidden sm:block overflow-x-auto">
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr className="border-b border-border">
+              {COLS.map((c) => (
+                <th key={c.key} className={clsx("text-left py-2.5 px-3 text-[10px] font-medium uppercase tracking-widest text-muted whitespace-nowrap", c.w)}>
+                  {c.label}
+                </th>
+              ))}
             </tr>
-          )}
-
-          {!loading && signals.map((s) => (
-            <tr
-              key={s.id}
-              className="signal-row border-b border-border/30 transition-colors duration-100"
-            >
-              {/* Time */}
-              <td className="py-2.5 px-3 font-mono text-muted whitespace-nowrap">
-                {new Date(s.timestamp).toLocaleString("en-US", {
-                  month: "2-digit", day: "2-digit",
-                  hour: "2-digit", minute: "2-digit", hour12: false,
-                })}
-              </td>
-
-              {/* Pair */}
-              <td className="py-2.5 px-3 font-mono font-medium text-text whitespace-nowrap">
-                {s.symbol.replace("_USDT", "")}<span className="text-muted">/USDT</span>
-              </td>
-
-              {/* Signal */}
-              <td className="py-2.5 px-3">
-                <DecisionBadge decision={s.decision} />
-              </td>
-
-              {/* Entry */}
-              <td className="py-2.5 px-3 font-mono text-subtle">
-                {s.entry ? `$${fmt(s.entry, 6)}` : `$${fmt(s.current_price, 6)}`}
-              </td>
-
-              {/* TP */}
-              <td className="py-2.5 px-3 font-mono text-success/80">
-                {s.tp ? `$${fmt(s.tp, 6)}` : "—"}
-              </td>
-
-              {/* SL */}
-              <td className="py-2.5 px-3 font-mono text-danger/80">
-                {s.sl ? `$${fmt(s.sl, 6)}` : "—"}
-              </td>
-
-              {/* Confidence */}
-              <td className="py-2.5 px-3 font-mono text-muted">
-                {s.confidence != null ? `${s.confidence}%` : "—"}
-              </td>
-
-              {/* Status */}
-              <td className="py-2.5 px-3">
-                <span className={clsx(
-                  "text-[10px] font-mono uppercase",
-                  s.status === "OPEN"     && "text-warning",
-                  s.status === "CLOSED"   && "text-subtle",
-                  s.status === "NO TRADE" && "text-muted/60",
-                )}>
-                  {s.status}
-                </span>
-              </td>
-
-              {/* Result */}
-              <td className="py-2.5 px-3">
-                <ResultBadge result={s.result} />
-                {!s.result && s.status !== "NO TRADE" && (
-                  <span className="text-[10px] font-mono text-muted/50">—</span>
-                )}
-              </td>
-
-              {/* PnL */}
-              <td className="py-2.5 px-3">
-                <PnlCell pnl={s.pnl_pct} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {signals.map((s) => (
+              <tr key={s.id} className="signal-row border-b border-border/30 transition-colors duration-100">
+                <td className="py-2.5 px-3 font-mono text-muted whitespace-nowrap">
+                  {new Date(s.timestamp).toLocaleString("en-US", {
+                    month: "2-digit", day: "2-digit",
+                    hour: "2-digit", minute: "2-digit", hour12: false,
+                  })}
+                </td>
+                <td className="py-2.5 px-3 font-mono font-medium text-text whitespace-nowrap">
+                  {s.symbol.replace("_USDT", "")}<span className="text-muted">/USDT</span>
+                </td>
+                <td className="py-2.5 px-3"><DecisionBadge decision={s.decision} /></td>
+                <td className="py-2.5 px-3 font-mono text-subtle">
+                  {s.entry ? `$${fmt(s.entry, 6)}` : `$${fmt(s.current_price, 6)}`}
+                </td>
+                <td className="py-2.5 px-3 font-mono text-success/80">{s.tp ? `$${fmt(s.tp, 6)}` : "—"}</td>
+                <td className="py-2.5 px-3 font-mono text-danger/80">{s.sl ? `$${fmt(s.sl, 6)}` : "—"}</td>
+                <td className="py-2.5 px-3 font-mono text-muted">{s.confidence != null ? `${s.confidence}%` : "—"}</td>
+                <td className="py-2.5 px-3">
+                  <span className={clsx("text-[10px] font-mono uppercase",
+                    s.status === "OPEN"     && "text-warning",
+                    s.status === "CLOSED"   && "text-subtle",
+                    s.status === "NO TRADE" && "text-muted/60",
+                  )}>
+                    {s.status}
+                  </span>
+                </td>
+                <td className="py-2.5 px-3">
+                  <ResultBadge result={s.result} />
+                  {!s.result && s.status !== "NO TRADE" && (
+                    <span className="text-[10px] font-mono text-muted/50">—</span>
+                  )}
+                </td>
+                <td className="py-2.5 px-3"><PnlCell pnl={s.pnl_pct} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
