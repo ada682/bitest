@@ -1,13 +1,16 @@
 """
-Bot engine — daily 20-symbol scanner (no auto-trade).
+Bot engine — daily 20-signal scanner (no auto-trade).
 
 Rules:
-  • Every day, pick exactly MAX_DAILY_SYMBOLS symbols to analyse.
-  • BTC_USDT, ETH_USDT, SOL_USDT are ALWAYS included.
-  • The remaining slots are filled with a random sample from the full pool.
-  • "NO TRADE" results are counted but NEVER saved or emitted to the frontend.
-  • After the daily batch finishes, the engine sleeps until midnight (local time)
-    then automatically runs a fresh random batch the next day.
+  • Every day, scan symbols one-by-one until exactly MAX_DAILY_SIGNALS
+    actionable (LONG / SHORT) signals are collected.
+  • "NO TRADE" results are counted silently and do NOT contribute to the
+    daily quota — the bot simply moves on to the next symbol.
+  • BTC_USDT, ETH_USDT, SOL_USDT are always in the pool (scanned first).
+  • If the pool runs out before the quota is reached, a fresh shuffled pool
+    is built from all contracts and scanning continues.
+  • After the daily quota is filled, the engine sleeps until midnight then
+    automatically runs a fresh batch the next day.
 """
 
 import asyncio
@@ -17,7 +20,7 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -37,14 +40,14 @@ CANDLE_LIMIT = 60
 SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
 MAX_SIGNALS  = 500   # keep last N actionable signals on disk
 
-# Daily limit & mandatory coins
-MAX_DAILY_SYMBOLS  = int(os.getenv("MAX_DAILY_SYMBOLS", "20"))
+# How many LONG/SHORT signals to collect per day (NO TRADE doesn't count)
+MAX_DAILY_SIGNALS  = int(os.getenv("MAX_DAILY_SYMBOLS", "20"))
 REQUIRED_SYMBOLS   = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
 
 # Delay between symbols to respect MEXC rate limits
 INTER_SYMBOL_DELAY = float(os.getenv("INTER_SYMBOL_DELAY", "2.0"))
 
-# Daily state file — remembers which date we last ran so restarts don't re-scan
+# Daily state file
 DAILY_STATE_FILE = Path(os.getenv("DAILY_STATE_FILE", "daily_state.json"))
 
 
@@ -74,7 +77,7 @@ def _load_daily_state() -> dict:
             return json.loads(DAILY_STATE_FILE.read_text())
     except Exception:
         pass
-    return {"date": "", "symbols": []}
+    return {"date": "", "daily_signal_count": 0, "scanned_symbols": []}
 
 
 def _save_daily_state(state: dict):
@@ -86,11 +89,8 @@ def _save_daily_state(state: dict):
 
 def _seconds_until_midnight() -> float:
     """Seconds remaining until next local midnight."""
-    now = datetime.now()
-    midnight = datetime(now.year, now.month, now.day, 0, 0, 0)
-    # tomorrow's midnight
-    from datetime import timedelta
-    midnight += timedelta(days=1)
+    now      = datetime.now()
+    midnight = datetime(now.year, now.month, now.day, 0, 0, 0) + timedelta(days=1)
     return max((midnight - now).total_seconds(), 60)
 
 
@@ -103,33 +103,36 @@ class BotEngine:
         self.running = False
         self.config: Dict[str, Any] = {}
         self.state = {
-            "status":           "IDLE",
-            "last_signal":      None,
-            "last_error":       None,
-            "signals":          _load_signals(),
-            "trade_count":      0,
-            "win_count":        0,
-            "loss_count":       0,
-            "no_trade_count":   0,
-            "total_pnl_pct":    0.0,
-            "current_symbol":   None,
-            "symbols_scanned":  0,
-            "symbols_total":    0,
+            "status":             "IDLE",
+            "last_signal":        None,
+            "last_error":         None,
+            "signals":            _load_signals(),
+            "trade_count":        0,
+            "win_count":          0,
+            "loss_count":         0,
+            "no_trade_count":     0,
+            "total_pnl_pct":      0.0,
+            "current_symbol":     None,
+            "symbols_scanned":    0,   # total symbols analysed today (incl NO TRADE)
             # Daily tracking
-            "scan_date":        "",
-            "daily_symbols":    [],
+            "scan_date":          "",
+            "daily_signal_count": 0,   # LONG/SHORT found today (quota counter)
+            "daily_scanned":      [],  # symbols already scanned today
         }
         self._rebuild_counters()
 
+        # Restore today's progress from disk so restarts don't re-count
+        self._restore_daily_state()
+
         self._task: Optional[asyncio.Task] = None
         self._listeners: List[Callable]    = []
+        self._active_signal = None          # kept for debug endpoint compat
 
     # ------------------------------------------------------------------
-    # Rebuild counters from persisted (actionable) signals
+    # Rebuild counters from persisted signals
     # ------------------------------------------------------------------
     def _rebuild_counters(self):
         for s in self.state["signals"]:
-            # All signals in file are LONG/SHORT (NO TRADE never saved)
             self.state["trade_count"] += 1
             result = s.get("result")
             if result == "TP":
@@ -140,6 +143,15 @@ class BotEngine:
                 self.state["loss_count"] += 1
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
+
+    def _restore_daily_state(self):
+        ds = _load_daily_state()
+        today = date.today().isoformat()
+        if ds.get("date") == today:
+            self.state["scan_date"]          = today
+            self.state["daily_signal_count"] = ds.get("daily_signal_count", 0)
+            self.state["daily_scanned"]      = ds.get("scanned_symbols", [])
+            self.state["symbols_scanned"]    = len(self.state["daily_scanned"])
 
     # ------------------------------------------------------------------
     # Listener management
@@ -191,40 +203,81 @@ class BotEngine:
             try:
                 today = date.today().isoformat()
 
+                # ── New day: reset daily counters ────────────────────────
                 if self.state["scan_date"] != today:
-                    # ── New day: build a fresh symbol list ───────────────
-                    symbols = await self._pick_daily_symbols()
-                    self.state["scan_date"]    = today
-                    self.state["daily_symbols"] = symbols
-                    _save_daily_state({"date": today, "symbols": symbols})
-                    print(f"[{today}] Daily batch: {symbols}")
-                else:
-                    # Restarted mid-day — reuse today's list
-                    symbols = self.state["daily_symbols"]
-                    print(f"[{today}] Resuming today's batch: {symbols}")
+                    self.state["scan_date"]          = today
+                    self.state["daily_signal_count"] = 0
+                    self.state["daily_scanned"]      = []
+                    self.state["symbols_scanned"]    = 0
+                    _save_daily_state({
+                        "date":               today,
+                        "daily_signal_count": 0,
+                        "scanned_symbols":    [],
+                    })
+                    print(f"[{today}] New day — collecting {MAX_DAILY_SIGNALS} signals")
 
-                # ── Scan the selected symbols ─────────────────────────
-                self.state["symbols_total"]   = len(symbols)
-                self.state["symbols_scanned"] = 0
+                # ── Already hit quota today? sleep until midnight ─────────
+                if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
+                    secs = _seconds_until_midnight()
+                    hh   = int(secs // 3600)
+                    mm   = int((secs % 3600) // 60)
+                    msg  = (f"Daily quota reached "
+                            f"({self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS} signals). "
+                            f"Next run in {hh}h {mm}m.")
+                    print(msg)
+                    self._emit("status", msg)
+                    self.state["status"] = "WAITING_NEXT_DAY"
+                    await asyncio.sleep(secs)
+                    self.state["status"] = "RUNNING"
+                    continue
 
-                for symbol in symbols:
+                # ── Build a fresh symbol pool (excluding already scanned) ─
+                pool = await self._build_pool(exclude=set(self.state["daily_scanned"]))
+                if not pool:
+                    # Rare: every contract already scanned today — wait midnight
+                    secs = _seconds_until_midnight()
+                    print(f"Pool exhausted without reaching quota. Waiting {int(secs)}s.")
+                    self._emit("status", "All symbols scanned — waiting next day.")
+                    self.state["status"] = "WAITING_NEXT_DAY"
+                    await asyncio.sleep(secs)
+                    self.state["status"] = "RUNNING"
+                    continue
+
+                # ── Scan pool until quota is filled ──────────────────────
+                for symbol in pool:
                     if not self.running:
                         break
-                    await self._cycle(symbol)
+                    if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
+                        break
+
+                    found = await self._cycle(symbol)
+
+                    # Mark symbol as scanned regardless of result
+                    self.state["daily_scanned"].append(symbol)
                     self.state["symbols_scanned"] += 1
+
+                    # Persist progress so restarts resume correctly
+                    _save_daily_state({
+                        "date":               today,
+                        "daily_signal_count": self.state["daily_signal_count"],
+                        "scanned_symbols":    self.state["daily_scanned"],
+                    })
+
+                    if found:
+                        progress = (f"Signal {self.state['daily_signal_count']}"
+                                    f"/{MAX_DAILY_SIGNALS} collected.")
+                        self._emit("progress", {
+                            "daily_signal_count": self.state["daily_signal_count"],
+                            "max_daily_signals":  MAX_DAILY_SIGNALS,
+                            "symbols_scanned":    self.state["symbols_scanned"],
+                        })
+                        print(f"  📊 {progress}")
+
                     await asyncio.sleep(INTER_SYMBOL_DELAY)
 
-                # ── Sleep until midnight for next day's batch ─────────
-                secs = _seconds_until_midnight()
-                hh   = int(secs // 3600)
-                mm   = int((secs % 3600) // 60)
-                msg  = f"Daily scan done ({len(symbols)} symbols). Next run in {hh}h {mm}m."
-                print(msg)
-                self._emit("status", msg)
-                self.state["status"] = "WAITING_NEXT_DAY"
-
-                await asyncio.sleep(secs)
-                self.state["status"] = "RUNNING"
+                # ── If quota not yet reached, outer loop rebuilds pool ────
+                # (outer `while self.running` continues; pool will exclude
+                #  already-scanned symbols so we pick fresh ones)
 
             except asyncio.CancelledError:
                 print("Scanner loop cancelled")
@@ -240,37 +293,35 @@ class BotEngine:
         print("Scanner loop ended")
 
     # ------------------------------------------------------------------
-    # Build the daily symbol list
+    # Build a shuffled symbol pool, required coins first
     # ------------------------------------------------------------------
-    async def _pick_daily_symbols(self) -> List[str]:
+    async def _build_pool(self, exclude: set = None) -> List[str]:
+        exclude = exclude or set()
         self._emit("status", "Fetching contract list from MEXC…")
         try:
             contracts = await mexc_client.get_contracts()
         except Exception as e:
             logger.error(f"Failed to fetch contracts: {e}")
             self._emit("error", f"Contract fetch error: {e}")
-            return REQUIRED_SYMBOLS[:]
+            # Fallback: return required symbols not yet scanned
+            return [s for s in REQUIRED_SYMBOLS if s not in exclude]
 
         all_symbols = [c["symbol"] for c in contracts]
 
-        # Mandatory coins (filter to those actually listed on MEXC)
-        mandatory = [s for s in REQUIRED_SYMBOLS if s in all_symbols]
-
-        # Pool = everything else
-        pool = [s for s in all_symbols if s not in mandatory]
+        mandatory = [s for s in REQUIRED_SYMBOLS
+                     if s in all_symbols and s not in exclude]
+        pool      = [s for s in all_symbols
+                     if s not in REQUIRED_SYMBOLS and s not in exclude]
         random.shuffle(pool)
 
-        remaining_slots = max(MAX_DAILY_SYMBOLS - len(mandatory), 0)
-        selected = mandatory + pool[:remaining_slots]
-
-        # Shuffle the final list so mandatory coins aren't always first
-        random.shuffle(selected)
-        return selected
+        return mandatory + pool
 
     # ------------------------------------------------------------------
-    # One analysis cycle for a single symbol
+    # One analysis cycle for a single symbol.
+    # Returns True if an actionable signal (LONG/SHORT) was found,
+    # False if result was NO TRADE or an error occurred.
     # ------------------------------------------------------------------
-    async def _cycle(self, symbol: str):
+    async def _cycle(self, symbol: str) -> bool:
         self.state["current_symbol"] = symbol
         self._emit("status", f"Analysing {symbol}…")
         print(f"--- {symbol} ---")
@@ -286,7 +337,7 @@ class BotEngine:
                 print(f"  {tf} fetch error: {e}")
 
         if not candles_by_tf:
-            return
+            return False
 
         # 2. Current price
         try:
@@ -297,24 +348,24 @@ class BotEngine:
             current_price = float(tf_any[-1][4])
 
         if current_price <= 0:
-            return
+            return False
 
         # 3. AI analysis
         try:
             signal = await deepseek_ai.analyze(symbol, candles_by_tf)
         except Exception as e:
             logger.error(f"AI error for {symbol}: {e}")
-            return
+            return False
 
         decision = signal.get("decision", "NO TRADE")
 
-        # 4a. NO TRADE — count silently, never touch the frontend
+        # 4a. NO TRADE — count silently, do NOT increment daily quota
         if decision == "NO TRADE":
             self.state["no_trade_count"] += 1
-            print(f"  → NO TRADE (skipped)")
-            return
+            print(f"  → NO TRADE (not counted toward daily quota)")
+            return False   # ← caller will fetch the next symbol
 
-        # 4b. Actionable signal — save & broadcast
+        # 4b. Actionable signal — save, broadcast, increment quota
         sig_id = str(uuid.uuid4())[:8]
         signal_record = {
             "id":            sig_id,
@@ -340,14 +391,19 @@ class BotEngine:
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
         _save_signals(self.state["signals"])
 
-        self.state["last_signal"] = signal_record
-        self.state["trade_count"] += 1
+        self.state["last_signal"]        = signal_record
+        self.state["trade_count"]       += 1
+        self.state["daily_signal_count"] += 1   # ← counts toward quota
 
         self._emit("signal", signal_record)
-        print(f"  ✅ {decision} @ {current_price} | TP={signal.get('tp')} SL={signal.get('sl')} | conf={signal.get('confidence')}%")
+        print(f"  ✅ {decision} @ {current_price} | TP={signal.get('tp')} "
+              f"SL={signal.get('sl')} | conf={signal.get('confidence')}% "
+              f"[{self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS} today]")
 
         # 5. Monitor TP/SL in the background
         asyncio.create_task(self._monitor_signal(sig_id))
+
+        return True   # ← signal found, quota incremented
 
     # ------------------------------------------------------------------
     # Monitor a signal until TP / SL / timeout
@@ -428,29 +484,30 @@ class BotEngine:
         winrate = round(wins / trades * 100, 2) if trades > 0 else 0.0
         return {
             **self.state,
-            "winrate": winrate,
-            # Expose daily info
-            "scan_date":     self.state["scan_date"],
-            "daily_symbols": self.state["daily_symbols"],
-            "next_reset_in": int(_seconds_until_midnight()),
+            "winrate":            winrate,
+            "scan_date":          self.state["scan_date"],
+            "daily_signal_count": self.state["daily_signal_count"],
+            "max_daily_signals":  MAX_DAILY_SIGNALS,
+            "next_reset_in":      int(_seconds_until_midnight()),
         }
 
     def reset_stats(self):
         self.state.update({
-            "signals":          [],
-            "trade_count":      0,
-            "win_count":        0,
-            "loss_count":       0,
-            "no_trade_count":   0,
-            "total_pnl_pct":    0.0,
-            "last_signal":      None,
-            "last_error":       None,
-            "symbols_scanned":  0,
-            "scan_date":        "",   # force fresh pick next cycle
-            "daily_symbols":    [],
+            "signals":            [],
+            "trade_count":        0,
+            "win_count":          0,
+            "loss_count":         0,
+            "no_trade_count":     0,
+            "total_pnl_pct":      0.0,
+            "last_signal":        None,
+            "last_error":         None,
+            "symbols_scanned":    0,
+            "daily_signal_count": 0,
+            "scan_date":          "",   # force fresh pick next cycle
+            "daily_scanned":      [],
         })
         _save_signals([])
-        _save_daily_state({"date": "", "symbols": []})
+        _save_daily_state({"date": "", "daily_signal_count": 0, "scanned_symbols": []})
 
 
 bot_engine = BotEngine()
