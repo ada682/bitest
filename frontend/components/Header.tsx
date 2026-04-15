@@ -8,13 +8,12 @@ interface HeaderProps {
   total?:          number;
   onStart:         () => void;
   onStop:          () => void;
-  onReset:         () => void;  // ← bisa dihapus juga dari interface
   running:         boolean;
 }
 
 export default function Header({
   status, currentSymbol, scanned, total,
-  onStart, onStop, onReset, running,  // ← hapus onReset dari sini
+  onStart, onStop, running,
 }: HeaderProps) {
   return (
     <header className="h-14 border-b border-border bg-surface/80 backdrop-blur flex items-center px-6 gap-4 sticky top-0 z-10">
@@ -36,16 +35,6 @@ export default function Header({
 
       {/* Controls */}
       <div className="flex items-center gap-2">
-        {/* HAPUS ATAU COMMENT TOMBOL RESET DI BAWAH INI */}
-        {/* 
-        <button
-          onClick={onReset}
-          className="px-3 py-1.5 text-xs font-medium text-muted hover:text-text border border-border hover:border-muted rounded-lg transition-colors"
-        >
-          Reset
-        </button>
-        */}
-        
         {running ? (
           <button
             onClick={onStop}
