@@ -1,9 +1,18 @@
 """
 DeepSeek AI integration - Void/Wick pattern strategy signal generator.
 Signal only (no auto-trade). Uses OHLCV text only, no chart images.
+
+Parallel mode: 3 tokens run concurrently — first valid LONG/SHORT wins.
+Env vars required:
+    DEEPSEEK_TOKEN_1   (required)
+    DEEPSEEK_TOKEN_2   (optional, for parallel speed)
+    DEEPSEEK_TOKEN_3   (optional, for parallel speed)
+    DEEPSEEK_WASM_PATH (default: sha3.wasm)
 """
 
+import asyncio
 import json
+import logging
 import os
 import re
 import base64
@@ -12,7 +21,9 @@ import ctypes
 import httpx
 import wasmtime
 from threading import Lock
-from typing import Optional
+from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 DEEPSEEK_BASE = "https://chat.deepseek.com"
 
@@ -96,6 +107,10 @@ TRAINING DATA:
 ]"""
 
 
+# ---------------------------------------------------------------------------
+# WASM POW Solver (singleton, shared across all client instances)
+# ---------------------------------------------------------------------------
+
 class DeepSeekHashV1Solver:
     _instance = None
     _lock = Lock()
@@ -148,11 +163,23 @@ class DeepSeekHashV1Solver:
         return answer
 
 
+# ---------------------------------------------------------------------------
+# Single DeepSeek client (one token / one session)
+# ---------------------------------------------------------------------------
+
 class DeepSeekAI:
-    def __init__(self):
-        self.token = os.getenv("DEEPSEEK_TOKEN", "")
-        self.wasm_path = os.getenv("DEEPSEEK_WASM_PATH", "sha3.wasm")
-        self.solver = None
+    def __init__(self, token: str, wasm_path: str, slot: int = 1):
+        """
+        Parameters
+        ----------
+        token     : Bearer token for chat.deepseek.com
+        wasm_path : Path to sha3.wasm POW file
+        slot      : Human-readable index (1/2/3) used in log messages
+        """
+        self.token     = token
+        self.wasm_path = wasm_path
+        self.slot      = slot
+        self.solver: Optional[DeepSeekHashV1Solver] = None
         self._init_solver()
 
         self.headers = WORKING_HEADERS.copy()
@@ -162,12 +189,18 @@ class DeepSeekAI:
         self._chat_session_id: Optional[str] = None
         self._parent_message_id: Optional[int] = None
 
+    def _tag(self) -> str:
+        """Short prefix for log lines, e.g. [DS-2]"""
+        return f"[DS-{self.slot}]"
+
     def _init_solver(self):
         if os.path.exists(self.wasm_path):
-            print(f"✅ Loading WASM: {self.wasm_path}")
+            logger.info(f"{self._tag()} Loading WASM solver: {self.wasm_path}")
+            print(f"{self._tag()} ✅ Loading WASM: {self.wasm_path}")
             self.solver = DeepSeekHashV1Solver(self.wasm_path)
         else:
-            print(f"⚠️ WASM not found: {self.wasm_path}")
+            logger.warning(f"{self._tag()} WASM not found at {self.wasm_path} — POW will be empty")
+            print(f"{self._tag()} ⚠️ WASM not found: {self.wasm_path}")
 
     async def _do_pow(self, target_path: str) -> str:
         try:
@@ -178,27 +211,33 @@ class DeepSeekAI:
             )
             data = resp.json()
             if data.get("code") != 0:
+                logger.warning(f"{self._tag()} POW challenge failed: {data}")
                 return ""
             challenge = data.get("data", {}).get("biz_data", {}).get("challenge")
             if not challenge or not self.solver:
                 return ""
+
             answer = self.solver.solve(challenge)
             if answer is None:
+                logger.warning(f"{self._tag()} POW solve returned None")
                 return ""
+
             pow_dict = {
                 "algorithm": "DeepSeekHashV1",
-                "challenge": challenge["challenge"],
-                "salt": challenge["salt"],
-                "answer": answer,
-                "signature": challenge["signature"],
+                "challenge":  challenge["challenge"],
+                "salt":       challenge["salt"],
+                "answer":     answer,
+                "signature":  challenge["signature"],
                 "target_path": target_path,
             }
             return base64.b64encode(json.dumps(pow_dict, separators=(",", ":")).encode()).decode()
-        except Exception:
+        except Exception as e:
+            logger.error(f"{self._tag()} POW exception: {e}")
             return ""
 
     async def _ensure_session(self):
         if not self._chat_session_id:
+            logger.info(f"{self._tag()} Creating new chat session")
             resp = await self.client.post(
                 "/api/v0/chat_session/create",
                 headers=self.headers,
@@ -206,39 +245,24 @@ class DeepSeekAI:
             )
             data = resp.json()
             if data.get("code") != 0:
-                raise Exception(f"Session error: {data.get('msg')}")
-            biz_data = data.get("data", {}).get("biz_data", {})
+                raise Exception(f"{self._tag()} Session error: {data.get('msg')} | full={data}")
+            biz_data    = data.get("data", {}).get("biz_data", {})
             chat_session = biz_data.get("chat_session", {})
             self._chat_session_id = chat_session.get("id")
+            logger.info(f"{self._tag()} Session created: {self._chat_session_id}")
 
     async def analyze(self, symbol: str, candles_by_tf: dict) -> dict:
-        """
-        Analyze OHLCV data across multiple timeframes using void/wick strategy.
+        tag = self._tag()
+        logger.info(f"{tag} Starting analysis for {symbol}")
 
-        candles_by_tf: {
-            "3m":  [[ts, o, h, l, c, v], ...],
-            "5m":  [...],
-            "15m": [...],
-            "30m": [...],
-            "1h":  [...],
-            "2h":  [...],
-            "4h":  [...],
-        }
+        try:
+            await self._ensure_session()
+        except Exception as e:
+            logger.error(f"{tag} Session setup failed for {symbol}: {e}")
+            return self._no_trade_response(f"Session error: {e}")
 
-        Returns:
-        {
-            "trend": str,
-            "pattern": str,
-            "decision": "LONG" | "SHORT" | "NO TRADE",
-            "entry": float | None,
-            "reason": str,
-            "confidence": int,
-        }
-        """
-        await self._ensure_session()
-
-        # Build OHLCV text block for each timeframe
-        tf_blocks = []
+        # Build OHLCV prompt
+        tf_blocks  = []
         last_price = None
         for tf in ["3m", "5m", "15m", "30m", "1h", "2h", "4h"]:
             candles = candles_by_tf.get(tf, [])
@@ -281,31 +305,38 @@ You MUST respond in this EXACT JSON format ONLY — no extra text:
 
 If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a trade."""
 
-        pow_token = await self._do_pow("/api/v0/chat/completion")
+        pow_token   = await self._do_pow("/api/v0/chat/completion")
         comp_headers = {**self.headers, "x-ds-pow-response": pow_token}
 
         payload = {
-            "chat_session_id": self._chat_session_id,
-            "parent_message_id": self._parent_message_id,
-            "prompt": prompt,
-            "ref_file_ids": [],
-            "thinking_enabled": True,
-            "search_enabled": False,
-            "preempt": False,
+            "chat_session_id":    self._chat_session_id,
+            "parent_message_id":  self._parent_message_id,
+            "prompt":             prompt,
+            "ref_file_ids":       [],
+            "thinking_enabled":   True,
+            "search_enabled":     False,
+            "preempt":            False,
         }
 
-        full_text = ""
+        full_text  = ""
         in_thinking = False
 
         try:
+            logger.info(f"{tag} Sending request to DeepSeek for {symbol}")
             async with self.client.stream(
                 "POST",
                 "/api/v0/chat/completion",
                 headers=comp_headers,
                 json=payload,
             ) as resp:
+                # ── Log HTTP status immediately ──────────────────────────
+                logger.info(f"{tag} HTTP {resp.status_code} for {symbol}")
+                print(f"{tag} HTTP {resp.status_code} | {symbol}")
+
                 if resp.status_code != 200:
-                    return self._no_trade_response("API error")
+                    body = await resp.aread()
+                    logger.error(f"{tag} Non-200 response for {symbol}: {body.decode()[:500]}")
+                    return self._no_trade_response(f"HTTP {resp.status_code}")
 
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data: "):
@@ -330,42 +361,83 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
                                 full_text += after
                         elif not in_thinking:
                             full_text += chunk
-                    except Exception:
-                        pass
+                    except Exception as chunk_err:
+                        logger.debug(f"{tag} Chunk parse error: {chunk_err} | line={line[:100]}")
 
-            # Parse JSON response
+            # ── Log the raw AI response so Railway shows it ──────────────
+            logger.info(f"{tag} Raw AI response for {symbol} ({len(full_text)} chars):\n{full_text}")
+            print(f"{tag} RAW AI RESPONSE [{symbol}]:\n{full_text[:1000]}")
+
+            if not full_text.strip():
+                logger.error(f"{tag} Empty response from DeepSeek for {symbol}")
+                return self._no_trade_response("Empty AI response")
+
+            # ── Parse JSON ───────────────────────────────────────────────
             start = full_text.find("{")
-            end = full_text.rfind("}") + 1
-            if start >= 0 and end > start:
-                result = json.loads(full_text[start:end])
-                decision = result.get("decision", "NO TRADE").upper()
-                if decision not in ("LONG", "SHORT", "NO TRADE"):
-                    decision = "NO TRADE"
-                return {
-                    "trend": result.get("trend", "SIDEWAYS"),
-                    "pattern": result.get("pattern", ""),
-                    "decision": decision,
-                    "entry": result.get("entry"),
-                    "tp": result.get("tp"),
-                    "sl": result.get("sl"),
-                    "reason": result.get("reason", ""),
-                    "confidence": int(result.get("confidence", 0)),
-                }
-            else:
-                return self._no_trade_response("Failed to parse AI response")
+            end   = full_text.rfind("}") + 1
+
+            if start < 0 or end <= start:
+                logger.error(
+                    f"{tag} No JSON block found in response for {symbol}. "
+                    f"Full text: {full_text[:800]}"
+                )
+                return self._no_trade_response("No JSON in AI response")
+
+            json_str = full_text[start:end]
+            logger.debug(f"{tag} Extracted JSON for {symbol}: {json_str}")
+
+            try:
+                result = json.loads(json_str)
+            except json.JSONDecodeError as je:
+                logger.error(
+                    f"{tag} JSON decode error for {symbol}: {je}\n"
+                    f"Attempted to parse: {json_str[:500]}"
+                )
+                return self._no_trade_response(f"JSON parse error: {je}")
+
+            decision = result.get("decision", "NO TRADE").upper().strip()
+            if decision not in ("LONG", "SHORT", "NO TRADE"):
+                logger.warning(
+                    f"{tag} Unexpected decision value '{decision}' for {symbol} — "
+                    f"treating as NO TRADE. Full result: {result}"
+                )
+                decision = "NO TRADE"
+
+            parsed = {
+                "trend":      result.get("trend", "SIDEWAYS"),
+                "pattern":    result.get("pattern", ""),
+                "decision":   decision,
+                "entry":      result.get("entry"),
+                "tp":         result.get("tp"),
+                "sl":         result.get("sl"),
+                "reason":     result.get("reason", ""),
+                "confidence": int(result.get("confidence", 0)),
+            }
+            logger.info(
+                f"{tag} ✅ Parsed signal for {symbol}: "
+                f"decision={parsed['decision']} entry={parsed['entry']} "
+                f"confidence={parsed['confidence']}"
+            )
+            print(
+                f"{tag} ✅ {symbol} → {parsed['decision']} "
+                f"entry={parsed['entry']} conf={parsed['confidence']}%"
+            )
+            return parsed
 
         except Exception as e:
-            return self._no_trade_response(f"Exception: {str(e)}")
+            logger.error(f"{tag} Exception during analyze({symbol}): {e}", exc_info=True)
+            return self._no_trade_response(f"Exception: {e}")
 
     def _no_trade_response(self, reason: str) -> dict:
+        logger.warning(f"{self._tag()} NO TRADE — reason: {reason}")
         return {
-            "trend": "SIDEWAYS",
-            "pattern": "none",
-            "decision": "NO TRADE",
-            "entry": None,
-            "tp": None,
-            "sl": None,
-            "reason": reason,
+            "trend":      "SIDEWAYS",
+            "pattern":    "none",
+            "decision":   "NO TRADE",
+            "entry":      None,
+            "tp":         None,
+            "sl":         None,
+            "reason":     reason,
             "confidence": 0,
         }
 
@@ -373,4 +445,128 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
         await self.client.aclose()
 
 
-deepseek_ai = DeepSeekAI()
+# ---------------------------------------------------------------------------
+# Parallel wrapper — 3 tokens run concurrently, first LONG/SHORT wins
+# ---------------------------------------------------------------------------
+
+class ParallelDeepSeekAI:
+    """
+    Manages up to 3 DeepSeekAI clients, each with its own token.
+    All clients fire simultaneously; the first valid LONG/SHORT result is
+    returned immediately. If all return NO TRADE, NO TRADE is returned.
+
+    Railway env vars:
+        DEEPSEEK_TOKEN_1   ← required
+        DEEPSEEK_TOKEN_2   ← optional
+        DEEPSEEK_TOKEN_3   ← optional
+        DEEPSEEK_WASM_PATH ← default: sha3.wasm
+    """
+
+    def __init__(self):
+        wasm_path = os.getenv("DEEPSEEK_WASM_PATH", "sha3.wasm")
+        raw_tokens = [
+            os.getenv("DEEPSEEK_TOKEN_1", ""),
+            os.getenv("DEEPSEEK_TOKEN_2", ""),
+            os.getenv("DEEPSEEK_TOKEN_3", ""),
+        ]
+
+        self.clients: List[DeepSeekAI] = []
+        for slot, token in enumerate(raw_tokens, start=1):
+            t = token.strip()
+            if t:
+                self.clients.append(DeepSeekAI(token=t, wasm_path=wasm_path, slot=slot))
+                logger.info(f"[ParallelDS] Registered token slot {slot}")
+                print(f"[ParallelDS] ✅ Token {slot} loaded")
+            else:
+                logger.warning(f"[ParallelDS] DEEPSEEK_TOKEN_{slot} not set — slot skipped")
+                print(f"[ParallelDS] ⚠️  DEEPSEEK_TOKEN_{slot} is empty — skipped")
+
+        if not self.clients:
+            logger.error("[ParallelDS] No tokens configured! Set DEEPSEEK_TOKEN_1 at minimum.")
+            print("[ParallelDS] ❌ No DeepSeek tokens found in env!")
+
+    async def analyze(self, symbol: str, candles_by_tf: dict) -> dict:
+        """
+        Fire all available clients in parallel.
+        Returns the first LONG/SHORT result.
+        Falls back to NO TRADE if all fail.
+        """
+        if not self.clients:
+            return self._no_trade_response("No tokens configured")
+
+        logger.info(f"[ParallelDS] Launching {len(self.clients)} parallel requests for {symbol}")
+        print(f"[ParallelDS] 🚀 Sending {len(self.clients)} parallel AI requests for {symbol}")
+
+        tasks = [
+            asyncio.create_task(client.analyze(symbol, candles_by_tf))
+            for client in self.clients
+        ]
+
+        # Collect results as they complete — return first actionable one
+        actionable = None
+        no_trade_fallback = None
+
+        for coro in asyncio.as_completed(tasks):
+            try:
+                result = await coro
+            except Exception as e:
+                logger.error(f"[ParallelDS] Task exception for {symbol}: {e}")
+                continue
+
+            decision = result.get("decision", "NO TRADE")
+
+            if decision in ("LONG", "SHORT"):
+                logger.info(
+                    f"[ParallelDS] 🎯 Got actionable signal for {symbol}: "
+                    f"{decision} — cancelling remaining tasks"
+                )
+                print(f"[ParallelDS] 🎯 First valid signal: {decision} for {symbol}")
+                actionable = result
+
+                # Cancel the remaining tasks (best-effort)
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                break
+
+            # Keep the first NO TRADE in case all fail
+            if no_trade_fallback is None and isinstance(result, dict):
+                no_trade_fallback = result
+
+        # Drain any cancelled tasks silently
+        for t in tasks:
+            if not t.done():
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        if actionable:
+            return actionable
+
+        logger.info(f"[ParallelDS] All slots returned NO TRADE for {symbol}")
+        print(f"[ParallelDS] ➡️  All slots NO TRADE for {symbol}")
+        return no_trade_fallback or self._no_trade_response("All parallel slots returned NO TRADE")
+
+    def _no_trade_response(self, reason: str) -> dict:
+        return {
+            "trend":      "SIDEWAYS",
+            "pattern":    "none",
+            "decision":   "NO TRADE",
+            "entry":      None,
+            "tp":         None,
+            "sl":         None,
+            "reason":     reason,
+            "confidence": 0,
+        }
+
+    async def close(self):
+        for client in self.clients:
+            await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Singleton used by the rest of the app (drop-in replacement)
+# ---------------------------------------------------------------------------
+
+deepseek_ai = ParallelDeepSeekAI()
