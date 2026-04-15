@@ -1,20 +1,20 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
-from services.mexc_client import mexc_client
+from services.bitget_client import bitget
 
 router = APIRouter()
 
 
 @router.get("/account/{symbol}")
 async def get_account(symbol: str):
-    data = await mexc_client.get_account(symbol)  # Need to implement this
+    data = await bitget.get_account(symbol)
     return {"data": data}
 
 
 @router.get("/positions")
 async def get_positions():
-    data = await mexc_client.get_positions()
+    data = await bitget.get_positions()
     return {"data": data}
 
 
@@ -26,6 +26,6 @@ class LeverageRequest(BaseModel):
 
 @router.post("/leverage")
 async def set_leverage(req: LeverageRequest):
-    # MEXC may handle leverage differently
-    result = await mexc_client.set_leverage(req.symbol, req.leverage)
-    return {"result": result}
+    result_long = await bitget.set_leverage(req.symbol, req.leverage, "USDT", "long")
+    result_short = await bitget.set_leverage(req.symbol, req.leverage, "USDT", "short")
+    return {"long": result_long, "short": result_short}
