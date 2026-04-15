@@ -1,19 +1,23 @@
 """
-Main bot engine - manages the scalping trading loop.
+Bot engine - signal generator only (no auto-trade).
+Fetches OHLCV from multiple timeframes, runs AI analysis,
+emits signals and monitors price to detect TP/SL hit.
 """
 
 import asyncio
-import json
 import time
 import logging
-from typing import Optional, Callable, Dict, Any
+import uuid
+from typing import Optional, Callable, Dict, Any, List
 
 from services.bitget_client import bitget
 from services.deepseek_ai import deepseek_ai
-from services.chart_generator import generate_chart_image
-from utils.indicators import compute_all, format_ohlcv_text, calculate_position_size
+from utils.indicators import format_ohlcv_text
 
 logger = logging.getLogger(__name__)
+
+TIMEFRAMES = ["3m", "5m", "15m", "30m", "1h", "2h", "4h"]
+CANDLE_LIMIT = 60  # candles per TF
 
 
 class BotEngine:
@@ -22,19 +26,28 @@ class BotEngine:
         self.config: Dict[str, Any] = {}
         self.state = {
             "status": "IDLE",
-            "open_position": None,
             "last_signal": None,
             "last_error": None,
+            # Signal history & stats
+            "signals": [],       # list of all signals with status
             "trade_count": 0,
             "win_count": 0,
             "loss_count": 0,
-            "total_pnl": 0.0,
+            "no_trade_count": 0,
+            "total_pnl_pct": 0.0,
         }
         self._task: Optional[asyncio.Task] = None
-        self._listeners: list[Callable] = []
+        self._listeners: List[Callable] = []
+        # Active signal being monitored {id, symbol, direction, entry, tp, sl}
+        self._active_signal: Optional[Dict] = None
+
+    # ------------------------------------------------------------------
+    # Listener management
+    # ------------------------------------------------------------------
 
     def add_listener(self, fn: Callable):
-        self._listeners.append(fn)
+        if fn not in self._listeners:
+            self._listeners.append(fn)
 
     def _emit(self, event: str, data: Any):
         for fn in self._listeners:
@@ -43,19 +56,17 @@ class BotEngine:
             except Exception:
                 pass
 
+    # ------------------------------------------------------------------
+    # Start / Stop
+    # ------------------------------------------------------------------
+
     async def start(self, config: dict):
-        print("🔥 BOT START called")
         if self.running:
             return {"ok": False, "reason": "Bot already running"}
-    
         self.config = config
         self.running = True
         self.state["status"] = "RUNNING"
-    
-        print(f"✅ Bot set to RUNNING, creating task...")
         self._task = asyncio.create_task(self._loop())
-        print(f"✅ Task created: {self._task}")
-    
         return {"ok": True}
 
     async def stop(self):
@@ -70,268 +81,239 @@ class BotEngine:
         await bitget.close()
         await deepseek_ai.close()
 
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
     async def _loop(self):
-        print("🚀 BOT LOOP STARTED")
-        logger.info("Bot loop started")
-    
+        logger.info("Bot signal loop started")
+        print("🚀 Signal loop started")
+
         await asyncio.sleep(2)
-    
+
         while self.running:
             try:
-                print("🔄 Bot cycle beginning...")
                 await self._cycle()
-                print("⏸ Cycle finished, waiting 5 seconds...")
-                await asyncio.sleep(5)
+                interval = int(self.config.get("interval", 60))
+                print(f"⏸ Cycle done. Next scan in {interval}s…")
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
-                print("❌ Bot loop cancelled")
+                print("❌ Signal loop cancelled")
                 break
             except Exception as e:
-                print(f"💥 Bot loop error: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"💥 Loop error: {e}")
+                import traceback; traceback.print_exc()
                 self.state["last_error"] = str(e)
                 self._emit("error", str(e))
-                await asyncio.sleep(5)
-    
-        print("🛑 Bot loop ended")
+                await asyncio.sleep(10)
+
         self.state["status"] = "IDLE"
+        print("🛑 Signal loop ended")
+
+    # ------------------------------------------------------------------
+    # One analysis cycle
+    # ------------------------------------------------------------------
 
     async def _cycle(self):
+        cfg = self.config
+        raw_symbol = cfg.get("symbol", "BTCUSDT")
+        symbol = raw_symbol.replace("_UMCBL", "")
+
+        print(f"=== CYCLE: {symbol} ===")
+        self._emit("status", f"Fetching data for {symbol}…")
+
+        # 1. Fetch candles for all timeframes
+        candles_by_tf: Dict[str, list] = {}
+        for tf in TIMEFRAMES:
+            try:
+                candles = await bitget.get_candles(symbol, tf, CANDLE_LIMIT)
+                if candles and len(candles) >= 5:
+                    candles_by_tf[tf] = candles
+                    print(f"  ✅ {tf}: {len(candles)} candles")
+                else:
+                    print(f"  ⚠️ {tf}: insufficient ({len(candles) if candles else 0})")
+            except Exception as e:
+                print(f"  ❌ {tf} fetch error: {e}")
+
+        if not candles_by_tf:
+            self._emit("status", "No candle data available")
+            return
+
+        # 2. Get current price
         try:
-            print("=== CYCLE START ===")
-            cfg = self.config
-            raw_symbol = cfg.get("symbol", "BTCUSDT")
-            symbol = raw_symbol.replace('_UMCBL', '')
-        
-            print(f"🎯 Symbol: {symbol}")
-        
-            margin_coin = "USDT"
-            leverage = str(cfg.get("leverage", "10"))
-            mode = cfg.get("mode", "MANUAL")
-            manual_margin = cfg.get("manual_margin", None)
-            tp_pct = cfg.get("tp_pct", 0.004)
-            sl_pct = cfg.get("sl_pct", 0.002)
+            ticker = await bitget.get_ticker(symbol)
+            current_price = float(ticker.get("lastPr", ticker.get("last", 0)))
+        except Exception:
+            # Fallback: last close from any available TF
+            tf_any = next(iter(candles_by_tf.values()))
+            current_price = float(tf_any[-1][4])
 
-            # 1. Fetch candle data
-            print(f"📊 Fetching candles for {symbol}...")
-            candles_1m = await bitget.get_candles(symbol, "1m", 100)
-            print(f"✅ Received {len(candles_1m)} candles for 1m")
-        
-            candles_3m = await bitget.get_candles(symbol, "3m", 100)
-            print(f"✅ Received {len(candles_3m)} candles for 3m")
+        print(f"  💰 Current price: {current_price}")
 
-            if not candles_1m or len(candles_1m) < 30:
-                print(f"❌ Insufficient candle data: {len(candles_1m)} candles (need 30)")
-                self._emit("status", f"Insufficient candle data: {len(candles_1m)}/30")
-                await asyncio.sleep(10)
-                return
-
-            # 2. Generate chart image
-            print("📈 Generating chart image...")
-            chart_b64 = generate_chart_image(candles_1m, symbol.replace("USDT", "/USDT"), "1m")
-            print(f"✅ Chart generated: {chart_b64 is not None}")
-
-            # 3. Compute indicators
-            print("📐 Computing indicators...")
-            indicators_1m = compute_all(candles_1m)
-            ohlcv_text = f"=== 1m Candles ===\n{format_ohlcv_text(candles_1m, 50)}\n\n=== 3m Candles ===\n{format_ohlcv_text(candles_3m, 30)}"
-            print(f"✅ Indicators computed. Current price: {indicators_1m.get('current_price')}")
-
-            # 4. AI analysis
-            print("🤖 Sending to AI for analysis...")
-            self._emit("status", "Analyzing with DeepSeek AI...")
-        
-            decision = await deepseek_ai.analyze(ohlcv_text, indicators_1m, chart_b64)
-        
-            print(f"✅ AI Response: decision={decision.get('decision')}, confidence={decision.get('confidence')}")
-
-            self.state["last_signal"] = {
-                "symbol": symbol,
-                "decision": decision.get("decision"),
-                "entry": decision.get("entry"),
-                "tp": decision.get("tp"),
-                "sl": decision.get("sl"),
-                "confidence": decision.get("confidence"),
-                "reason": decision.get("reason"),
-                "timestamp": int(time.time() * 1000),
-            }
-            self._emit("signal", self.state["last_signal"])
-
-            # 5. Execute trade if signal is strong
-            trade_decision = decision.get("decision")
-            confidence = decision.get("confidence", 0)
-
-            print(f"📊 Checking trade: decision={trade_decision}, confidence={confidence} (need >= 60)")
-
-            # Check if there's already an open position
-            if self.state["open_position"] is not None:
-                print(f"⚠️ Already have open position, skipping new trade")
-                self._emit("status", f"Already have open position, waiting...")
-                await asyncio.sleep(5)
-                return
-
-            # Execute trade for LONG/SHORT with confidence >= 60
-            if trade_decision in ("LONG", "SHORT") and confidence >= 60:
-                print(f"🎯 Executing {trade_decision} trade with {confidence}% confidence")
-                await self._execute_trade(
-                    symbol, margin_coin, leverage, mode, manual_margin,
-                    trade_decision, decision, tp_pct, sl_pct
-                )
-                await self._monitor_position(symbol)
-                await asyncio.sleep(3)
-            else:
-                print(f"⏸ No trade. Decision: {trade_decision}, Confidence: {confidence}% (need >=60)")
-                self._emit("status", f"No trade. Decision: {trade_decision}, Confidence: {confidence}%")
-                await asyncio.sleep(15)
-            
-        except Exception as e:
-            print(f"💥 CYCLE ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-
-    async def _execute_trade(self, symbol, margin_coin, leverage, mode, manual_margin,
-                              direction, decision, tp_pct, sl_pct):
+        # 3. AI analysis
+        self._emit("status", "Analyzing with AI (void/wick pattern)…")
         try:
-            print(f"🔧 EXECUTING TRADE: {direction} on {symbol}")
-            
-            lev = float(leverage)
-            price = float(decision.get("entry", 0))
-            if price == 0:
-                ticker = await bitget.get_ticker(symbol)
-                price = float(ticker.get("lastPr", ticker.get("last", 0)))
-                print(f"💰 Using live price: {price}")
-            
-            # Set position mode to one_way_mode
-            print(f"⚙️ Setting position mode to one_way_mode...")
-            mode_resp = await bitget.set_position_mode(symbol, margin_coin)
-            print(f"📦 Position mode response: {mode_resp}")
-            await asyncio.sleep(0.5)
-            
-            # Set leverage for both sides (required for crossed margin)
-            print(f"⚙️ Setting leverage to {lev}x for long...")
-            await bitget.set_leverage(symbol, leverage, margin_coin, "long")
-            await asyncio.sleep(0.3)
-            
-            print(f"⚙️ Setting leverage to {lev}x for short...")
-            await bitget.set_leverage(symbol, leverage, margin_coin, "short")
-            await asyncio.sleep(0.5)
-
-            # Get account balance
-            account = await bitget.get_futures_account(symbol, margin_coin)
-            print(f"💰 Account balance: {account.get('available', 'N/A')}")
-            
-            balance = float(account.get("available", 0))
-            if balance <= 0:
-                balance = float(account.get("accountEquity", 0)) * 0.9
-            
-            print(f"💰 Balance: {balance}, Leverage: {lev}, Price: {price}")
-
-            if balance <= 0 or price <= 0:
-                self._emit("error", f"Cannot execute: balance={balance}, price={price}")
-                return
-
-            # Calculate size
-            volume_place = int(self.config.get("volume_place", 3))
-            size = calculate_position_size(balance, lev, price, mode, manual_margin, volume_place)
-            print(f"📊 Position size: {size}")
-
-            # Map direction to order sides
-            if direction == "LONG":
-                side_open = "open_long"
-                side_close = "close_long"
-                tp_price = str(round(price * (1 + tp_pct), 6))
-                sl_price = str(round(price * (1 - sl_pct), 6))
-            else:
-                side_open = "open_short"
-                side_close = "close_short"
-                tp_price = str(round(price * (1 - tp_pct), 6))
-                sl_price = str(round(price * (1 + sl_pct), 6))
-
-            print(f"📈 TP: {tp_price}, SL: {sl_price}")
-
-            # Place main order
-            self._emit("status", f"Placing {direction} order...")
-            print(f"🚀 Placing order: {side_open}, size={size}")
-            
-            order_resp = await bitget.place_order(symbol, margin_coin, size, side_open)
-            print(f"📦 Order response: {order_resp}")
-
-            if order_resp.get("code") != "00000":
-                print(f"❌ Order failed: {order_resp.get('msg')}")
-                self._emit("error", f"Order failed: {order_resp.get('msg')}")
-                return
-
-            await asyncio.sleep(1)
-
-            # Set TP/SL
-            print(f"🎯 Setting TP: {tp_price}")
-            tp_resp = await bitget.place_tpsl(symbol, margin_coin, size, side_close, tp_price, "profit")
-            print(f"📦 TP response: {tp_resp}")
-            
-            print(f"🛑 Setting SL: {sl_price}")
-            sl_resp = await bitget.place_tpsl(symbol, margin_coin, size, side_close, sl_price, "loss")
-            print(f"📦 SL response: {sl_resp}")
-
-            self.state["open_position"] = {
-                "symbol": symbol,
-                "direction": direction,
-                "entry": price,
-                "tp": float(tp_price),
-                "sl": float(sl_price),
-                "size": size,
-                "timestamp": int(time.time() * 1000),
-            }
-            self.state["trade_count"] += 1
-            self._emit("position_open", self.state["open_position"])
-            print(f"✅ Position opened successfully!")
-
+            signal = await deepseek_ai.analyze(symbol, candles_by_tf)
         except Exception as e:
-            logger.error(f"Trade execution error: {e}")
-            print(f"❌ Trade execution error: {e}")
-            import traceback
-            traceback.print_exc()
-            self._emit("error", f"Trade error: {str(e)}")
+            logger.error(f"AI analyze error: {e}")
+            self._emit("error", f"AI error: {e}")
+            return
 
-    async def _monitor_position(self, symbol: str):
-        """Poll position until closed, emitting real unrealized PnL each tick."""
-        self._emit("status", "Monitoring open position...")
-        max_wait = 300
+        decision = signal.get("decision", "NO TRADE")
+        print(f"  🤖 AI decision: {decision} | confidence: {signal.get('confidence')}%")
+
+        # 4. Build signal record
+        sig_id = str(uuid.uuid4())[:8]
+        signal_record = {
+            "id": sig_id,
+            "symbol": symbol,
+            "timestamp": int(time.time() * 1000),
+            "current_price": current_price,
+            "trend": signal.get("trend"),
+            "pattern": signal.get("pattern"),
+            "decision": decision,
+            "entry": signal.get("entry"),
+            "tp": signal.get("tp"),
+            "sl": signal.get("sl"),
+            "reason": signal.get("reason"),
+            "confidence": signal.get("confidence"),
+            "status": "OPEN" if decision in ("LONG", "SHORT") else "NO TRADE",
+            "result": None,      # "TP" | "SL" | None
+            "pnl_pct": None,
+            "closed_at": None,
+            "closed_price": None,
+        }
+
+        # Prepend (newest first)
+        self.state["signals"].insert(0, signal_record)
+        # Keep last 200 signals
+        self.state["signals"] = self.state["signals"][:200]
+
+        self.state["last_signal"] = signal_record
+
+        if decision == "NO TRADE":
+            self.state["no_trade_count"] += 1
+            self._emit("signal", signal_record)
+            return
+
+        self.state["trade_count"] += 1
+        self._emit("signal", signal_record)
+
+        # 5. Monitor this signal for TP/SL
+        if self._active_signal is None:
+            self._active_signal = signal_record
+            asyncio.create_task(self._monitor_signal(sig_id))
+
+    # ------------------------------------------------------------------
+    # Signal monitor (polls price until TP or SL hit)
+    # ------------------------------------------------------------------
+
+    async def _monitor_signal(self, sig_id: str):
+        """Poll live price and mark signal TP or SL when hit."""
+        signal = self._find_signal(sig_id)
+        if not signal:
+            return
+
+        symbol = signal["symbol"]
+        direction = signal["decision"]
+        entry = signal.get("entry") or signal.get("current_price")
+        tp = signal.get("tp")
+        sl = signal.get("sl")
+
+        if not tp or not sl:
+            self._active_signal = None
+            return
+
+        print(f"👀 Monitoring signal {sig_id}: {direction} @ {entry} | TP={tp} SL={sl}")
+        self._emit("status", f"Monitoring signal {sig_id}…")
+
+        max_duration = 60 * 60 * 8  # 8 hours max
         start = time.time()
 
-        while time.time() - start < max_wait and self.state["open_position"] is not None:
-            await asyncio.sleep(3)
+        while time.time() - start < max_duration:
+            await asyncio.sleep(5)
+            if not self.running:
+                break
+
             try:
-                positions = await bitget.get_positions()
-                open_pos = [
-                    p for p in positions
-                    if p.get("symbol") == symbol and float(p.get("total", 0)) > 0
-                ]
+                ticker = await bitget.get_ticker(symbol)
+                price = float(ticker.get("lastPr", ticker.get("last", 0)))
+            except Exception:
+                continue
 
-                if not open_pos:
-                    self.state["open_position"] = None
-                    self._emit("position_close", {"symbol": symbol, "pnl": 0})
-                    print(f"✅ Position closed")
-                    return
+            hit = None
+            if direction == "LONG":
+                if price >= tp:
+                    hit = "TP"
+                elif price <= sl:
+                    hit = "SL"
+            elif direction == "SHORT":
+                if price <= tp:
+                    hit = "TP"
+                elif price >= sl:
+                    hit = "SL"
 
-                # Emit real unrealized PnL from Bitget (field: unrealizedPL)
-                pos = open_pos[0]
-                unrealized_pnl = float(pos.get("unrealizedPL", 0))
-                mark_price = float(pos.get("markPrice", 0))
-                self._emit("position_update", {
-                    "symbol": symbol,
-                    "unrealized_pnl": unrealized_pnl,
-                    "mark_price": mark_price,
-                })
+            if hit:
+                # Calculate pnl %
+                if entry and entry > 0:
+                    if direction == "LONG":
+                        pnl_pct = round((price - entry) / entry * 100, 4)
+                    else:
+                        pnl_pct = round((entry - price) / entry * 100, 4)
+                else:
+                    pnl_pct = 0.0
 
-            except Exception as e:
-                logger.error(f"Monitor error: {e}")
+                # Update signal record
+                signal["status"] = "CLOSED"
+                signal["result"] = hit
+                signal["pnl_pct"] = pnl_pct
+                signal["closed_at"] = int(time.time() * 1000)
+                signal["closed_price"] = price
 
-        if self.state["open_position"] is not None:
-            self.state["open_position"] = None
+                # Update stats
+                if hit == "TP":
+                    self.state["win_count"] += 1
+                else:
+                    self.state["loss_count"] += 1
+                self.state["total_pnl_pct"] = round(
+                    self.state["total_pnl_pct"] + pnl_pct, 4
+                )
+
+                print(f"  {'✅' if hit == 'TP' else '❌'} Signal {sig_id} closed: {hit} @ {price} | PnL: {pnl_pct}%")
+                self._emit("signal_closed", signal)
+                break
+
+        self._active_signal = None
+
+    def _find_signal(self, sig_id: str) -> Optional[Dict]:
+        for s in self.state["signals"]:
+            if s["id"] == sig_id:
+                return s
+        return None
+
+    # ------------------------------------------------------------------
+    # State / Stats
+    # ------------------------------------------------------------------
 
     def get_state(self) -> dict:
-        return {**self.state}
+        trades = self.state["trade_count"]
+        wins = self.state["win_count"]
+        losses = self.state["loss_count"]
+        winrate = round(wins / trades * 100, 2) if trades > 0 else 0.0
+        return {
+            **self.state,
+            "winrate": winrate,
+        }
+
+    def reset_stats(self):
+        self.state["signals"] = []
+        self.state["trade_count"] = 0
+        self.state["win_count"] = 0
+        self.state["loss_count"] = 0
+        self.state["no_trade_count"] = 0
+        self.state["total_pnl_pct"] = 0.0
+        self.state["last_signal"] = None
+        self.state["last_error"] = None
 
 
 bot_engine = BotEngine()
