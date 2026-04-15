@@ -132,6 +132,7 @@ export default function DashboardClient() {
           total={state.symbols_total}
           onStart={handleStart}
           onStop={handleStop}
+          onReset={handleReset}
           running={running}
         />
 
