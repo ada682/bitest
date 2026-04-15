@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sora:       'Sora', sans-serif;
+  --font-jetbrains:  'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin:     0;
+  padding:    0;
+}
+
+html, body {
+  background:  #0B0F1A;
+  color:       #E2EAF4;
+  font-family: var(--font-sora);
+  min-height:  100vh;
+  -webkit-font-smoothing:  antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* thin custom scrollbar */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #111827; }
+::-webkit-scrollbar-thumb { background: #1E2D45; border-radius: 2px; }
+
+/* pulse animation for live indicator */
+@keyframes pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.8; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+.pulse-ring {
+  animation: pulse-ring 1.5s cubic-bezier(0.4,0,0.6,1) infinite;
+}
+
+/* row hover */
+.signal-row:hover { background: rgba(29,111,216,0.05); }
+
+/* number flash */
+@keyframes flash-green {
+  0%, 100% { color: #E2EAF4; }
+  50%       { color: #10B981; }
+}
+.flash-new { animation: flash-green 0.6s ease; }
