@@ -1,12 +1,4 @@
 """
-DeepSeek AI integration - Void/Wick pattern strategy signal generator.
-Signal only (no auto-trade). Uses OHLCV text only, no chart images.
-
-Parallel mode: 3 tokens run concurrently — first valid LONG/SHORT wins.
-Env vars required:
-    DEEPSEEK_TOKEN_1   (required)
-    DEEPSEEK_TOKEN_2   (optional, for parallel speed)
-    DEEPSEEK_TOKEN_3   (optional, for parallel speed)
     DEEPSEEK_WASM_PATH (default: sha3.wasm)
 """
 
@@ -318,8 +310,8 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
             "preempt":            False,
         }
 
-        full_text  = ""
-        in_thinking = False
+        full_text         = ""
+        current_frag_type = None   # "THINK" or "RESPONSE"
 
         try:
             logger.info(f"{tag} Sending request to DeepSeek for {symbol}")
@@ -329,7 +321,6 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
                 headers=comp_headers,
                 json=payload,
             ) as resp:
-                # ── Log HTTP status immediately ──────────────────────────
                 logger.info(f"{tag} HTTP {resp.status_code} for {symbol}")
                 print(f"{tag} HTTP {resp.status_code} | {symbol}")
 
@@ -341,31 +332,53 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data: "):
                         continue
-                    content_chunk = line[6:]
-                    if not content_chunk or content_chunk == "{}":
+                    raw = line[6:]
+                    if not raw or raw == "{}":
                         continue
-                    try:
-                        jdata = json.loads(content_chunk)
-                        chunk = jdata.get("v", "")
-                        if not isinstance(chunk, str):
-                            continue
-                        if "<think>" in chunk:
-                            in_thinking = True
-                            before, _, rest = chunk.partition("<think>")
-                            if before:
-                                full_text += before
-                        elif "</think>" in chunk:
-                            in_thinking = False
-                            _, _, after = chunk.partition("</think>")
-                            if after:
-                                full_text += after
-                        elif not in_thinking:
-                            full_text += chunk
-                    except Exception as chunk_err:
-                        logger.debug(f"{tag} Chunk parse error: {chunk_err} | line={line[:100]}")
 
-            # ── Log the raw AI response so Railway shows it ──────────────
-            logger.info(f"{tag} Raw AI response for {symbol} ({len(full_text)} chars):\n{full_text}")
+                    try:
+                        jdata = json.loads(raw)
+                    except Exception as parse_err:
+                        logger.debug(f"{tag} JSON parse error: {parse_err} | line={line[:100]}")
+                        continue
+
+                    p = jdata.get("p", "")
+                    o = jdata.get("o", "")
+                    v = jdata.get("v")
+
+                    # ── New fragment appended to fragments array ──────────────
+                    # e.g. {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"Hello"}]}
+                    # This is the moment the model SWITCHES from THINK → RESPONSE
+                    if p == "response/fragments" and o == "APPEND" and isinstance(v, list):
+                        for frag in v:
+                            if isinstance(frag, dict) and "type" in frag:
+                                current_frag_type = frag["type"]
+                                logger.debug(f"{tag} Fragment switch → {current_frag_type}")
+                                # Capture initial content if any (usually the first word)
+                                init_content = frag.get("content", "")
+                                if current_frag_type == "RESPONSE" and init_content:
+                                    full_text += init_content
+                        continue
+
+                    # ── Initial response setup message ────────────────────────
+                    # e.g. {"v":{"response":{...,"fragments":[{"type":"THINK","content":"Okay"}]}}}
+                    if not p and isinstance(v, dict) and "response" in v:
+                        frags = v.get("response", {}).get("fragments", [])
+                        if frags:
+                            current_frag_type = frags[-1].get("type")
+                            logger.debug(f"{tag} Initial fragment type: {current_frag_type}")
+                        continue
+
+                    # ── Text token (incremental append to current fragment) ────
+                    # e.g. {"v":" word"}  or  {"p":"response/fragments/-1/content","o":"APPEND","v":","}
+                    # Only accumulate when we are in the RESPONSE fragment.
+                    if isinstance(v, str) and v:
+                        if current_frag_type == "RESPONSE":
+                            full_text += v
+                        # THINK tokens are intentionally discarded
+
+            # ── Log the raw AI response ──────────────────────────────────
+            logger.info(f"{tag} Raw RESPONSE text for {symbol} ({len(full_text)} chars):\n{full_text}")
             print(f"{tag} RAW AI RESPONSE [{symbol}]:\n{full_text[:1000]}")
 
             if not full_text.strip():
@@ -446,14 +459,24 @@ If there is NO clear void/imbalance setup, return "NO TRADE" — do NOT force a 
 
 
 # ---------------------------------------------------------------------------
-# Parallel wrapper — 3 tokens run concurrently, first LONG/SHORT wins
+# Parallel wrapper — each token analyzes a DIFFERENT coin simultaneously.
+# Used by bot_engine._loop() which calls analyze_batch() with a list of
+# (symbol, candles_by_tf) tuples — one per available token.
+#
+# The old single-symbol analyze() is kept for backward-compat but now just
+# calls the first available client (same as before if only 1 token).
 # ---------------------------------------------------------------------------
 
 class ParallelDeepSeekAI:
     """
     Manages up to 3 DeepSeekAI clients, each with its own token.
-    All clients fire simultaneously; the first valid LONG/SHORT result is
-    returned immediately. If all return NO TRADE, NO TRADE is returned.
+
+    New behaviour (parallel-coins mode):
+        bot_engine calls analyze_batch([(sym1, tf1), (sym2, tf2), ...])
+        Each symbol gets its own dedicated client — no racing on the same coin.
+
+    Legacy behaviour (single symbol):
+        analyze(symbol, candles_by_tf) still works — uses client[0] only.
 
     Railway env vars:
         DEEPSEEK_TOKEN_1   ← required
@@ -485,68 +508,60 @@ class ParallelDeepSeekAI:
             logger.error("[ParallelDS] No tokens configured! Set DEEPSEEK_TOKEN_1 at minimum.")
             print("[ParallelDS] ❌ No DeepSeek tokens found in env!")
 
+    # ------------------------------------------------------------------
+    # NEW: analyze multiple coins in parallel, one per client
+    # ------------------------------------------------------------------
+    async def analyze_batch(self, items: list) -> list:
+        """
+        Analyze a batch of symbols in parallel — one per available client.
+
+        Parameters
+        ----------
+        items : list of (symbol: str, candles_by_tf: dict)
+                Length must be <= len(self.clients).
+
+        Returns
+        -------
+        list of result dicts, same order as input items.
+        """
+        if not self.clients:
+            return [self._no_trade_response("No tokens configured")] * len(items)
+
+        tasks = [
+            asyncio.create_task(self.clients[i].analyze(sym, tfs))
+            for i, (sym, tfs) in enumerate(items)
+        ]
+
+        results = []
+        for t in asyncio.as_completed(tasks):
+            try:
+                results.append(await t)
+            except Exception as e:
+                logger.error(f"[ParallelDS] Batch task exception: {e}")
+                results.append(self._no_trade_response(f"Exception: {e}"))
+
+        # Re-order results to match input order (as_completed returns out-of-order)
+        ordered = [None] * len(items)
+        done_tasks = list(zip(tasks, range(len(items))))
+        for task, idx in done_tasks:
+            try:
+                ordered[idx] = task.result()
+            except Exception as e:
+                ordered[idx] = self._no_trade_response(f"Exception: {e}")
+
+        return ordered
+
+    # ------------------------------------------------------------------
+    # LEGACY: single-symbol analyze (uses first available client)
+    # ------------------------------------------------------------------
     async def analyze(self, symbol: str, candles_by_tf: dict) -> dict:
         """
-        Fire all available clients in parallel.
-        Returns the first LONG/SHORT result.
-        Falls back to NO TRADE if all fail.
+        Legacy single-symbol analyze.
+        Uses only client[0] — for backward compatibility.
         """
         if not self.clients:
             return self._no_trade_response("No tokens configured")
-
-        logger.info(f"[ParallelDS] Launching {len(self.clients)} parallel requests for {symbol}")
-        print(f"[ParallelDS] 🚀 Sending {len(self.clients)} parallel AI requests for {symbol}")
-
-        tasks = [
-            asyncio.create_task(client.analyze(symbol, candles_by_tf))
-            for client in self.clients
-        ]
-
-        # Collect results as they complete — return first actionable one
-        actionable = None
-        no_trade_fallback = None
-
-        for coro in asyncio.as_completed(tasks):
-            try:
-                result = await coro
-            except Exception as e:
-                logger.error(f"[ParallelDS] Task exception for {symbol}: {e}")
-                continue
-
-            decision = result.get("decision", "NO TRADE")
-
-            if decision in ("LONG", "SHORT"):
-                logger.info(
-                    f"[ParallelDS] 🎯 Got actionable signal for {symbol}: "
-                    f"{decision} — cancelling remaining tasks"
-                )
-                print(f"[ParallelDS] 🎯 First valid signal: {decision} for {symbol}")
-                actionable = result
-
-                # Cancel the remaining tasks (best-effort)
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                break
-
-            # Keep the first NO TRADE in case all fail
-            if no_trade_fallback is None and isinstance(result, dict):
-                no_trade_fallback = result
-
-        # Drain any cancelled tasks silently
-        for t in tasks:
-            if not t.done():
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-        if actionable:
-            return actionable
-
-        logger.info(f"[ParallelDS] All slots returned NO TRADE for {symbol}")
-        print(f"[ParallelDS] ➡️  All slots NO TRADE for {symbol}")
-        return no_trade_fallback or self._no_trade_response("All parallel slots returned NO TRADE")
+        return await self.clients[0].analyze(symbol, candles_by_tf)
 
     def _no_trade_response(self, reason: str) -> dict:
         return {
