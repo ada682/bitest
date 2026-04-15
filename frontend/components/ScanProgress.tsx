@@ -12,26 +12,23 @@ export default function ScanProgress({ scanned, total, symbol, visible }: Props)
   const pct = Math.round((scanned / total) * 100);
 
   return (
-    <div className="bg-card border border-border rounded-xl p-4">
+    <div className="bg-card border border-border rounded-xl p-3 sm:p-4">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[11px] font-medium uppercase tracking-widest text-muted">
+        <span className="text-[10px] sm:text-[11px] font-medium uppercase tracking-widest text-muted">
           Scanning All MEXC Pairs
         </span>
         <span className="text-xs font-mono text-subtle">
           {scanned} / {total}
         </span>
       </div>
-
-      {/* Progress bar */}
       <div className="w-full h-1.5 bg-border rounded-full overflow-hidden mb-2">
         <div
           className="h-full bg-accent rounded-full transition-all duration-500"
           style={{ width: `${pct}%` }}
         />
       </div>
-
       {symbol && (
-        <p className="text-[11px] font-mono text-muted/70">
+        <p className="text-[10px] sm:text-[11px] font-mono text-muted/70">
           Analysing: <span className="text-subtle">{symbol}</span>
         </p>
       )}
