@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     yield
     await bot_engine.shutdown()
 
-app = FastAPI(title="Crypto Scalping Bot API", lifespan=lifespan)
+app = FastAPI(title="Crypto Signal Bot API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
