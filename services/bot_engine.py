@@ -1,11 +1,15 @@
 """
-Bot engine — daily 20-signal scanner (no auto-trade).
+Bot engine — daily 20-signal scanner.
 
-Rules:
-  • Every day, scan symbols in parallel batches until exactly MAX_DAILY_SIGNALS
-    actionable (LONG / SHORT) signals are collected.
-  • Batch size = number of available DeepSeek tokens (1–3).
-    Each coin in a batch is analyzed by its own dedicated token simultaneously.
+Changes vs original:
+  • Symbol pool → fetched from Bitget USDT-FUTURES (previously MEXC)
+  • Candles       → still MEXC (better free kline data)
+  • On actionable signal → places real limit order on Bitget Demo account
+    with preset TP/SL
+  • _monitor_signal → kept as lightweight fallback, but primary tracking is
+    via Bitget private WebSocket (bitget_ws.py)
+  • handle_bitget_position_update() → called by WS to close signals
+    based on real Bitget position data
 """
 
 import asyncio
@@ -19,9 +23,10 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from services.mexc_client import mexc_client
-from services.deepseek_ai import deepseek_ai
-from utils.indicators import format_ohlcv_text
+from services.mexc_client   import mexc_client
+from services.bitget_client import bitget_client, mexc_to_bitget, bitget_to_mexc
+from services.deepseek_ai   import deepseek_ai
+from utils.indicators       import format_ohlcv_text
 
 logger = logging.getLogger(__name__)
 
@@ -33,27 +38,28 @@ TIMEFRAMES   = ["5m", "15m", "30m", "1h", "4h"]
 CANDLE_LIMIT = 150
 
 SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
-MAX_SIGNALS  = 500   # keep last N actionable signals on disk
+MAX_SIGNALS  = 500
 
-# How many LONG/SHORT signals to collect per day (NO TRADE doesn't count)
 MAX_DAILY_SIGNALS  = int(os.getenv("MAX_DAILY_SYMBOLS", "20"))
-REQUIRED_SYMBOLS   = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
+REQUIRED_SYMBOLS   = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]   # MEXC format internally
 
-# Delay between batches to respect MEXC rate limits
 INTER_SYMBOL_DELAY = float(os.getenv("INTER_SYMBOL_DELAY", "2.0"))
+DAILY_STATE_FILE   = Path(os.getenv("DAILY_STATE_FILE", "daily_state.json"))
 
-# Daily state file
-DAILY_STATE_FILE = Path(os.getenv("DAILY_STATE_FILE", "daily_state.json"))
+# Bitget order settings (configurable via env)
+BITGET_LEVERAGE    = int(os.getenv("BITGET_LEVERAGE", "10"))
+BITGET_MARGIN_MODE = os.getenv("BITGET_MARGIN_MODE", "isolated")
+# Position size: USDT margin per trade (0 = skip auto-order)
+BITGET_MARGIN_USDT = float(os.getenv("BITGET_MARGIN_USDT", "10"))
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (unchanged from original)
 # ---------------------------------------------------------------------------
 
 def _load_signals() -> list:
     try:
         SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        
         if SIGNALS_FILE.exists():
             data = json.loads(SIGNALS_FILE.read_text())
             print(f"📂 Loaded {len(data)} signals from {SIGNALS_FILE.absolute()}")
@@ -65,59 +71,34 @@ def _load_signals() -> list:
 
 
 def _save_signals(open_signals: list):
-    """
-    Save open signals to disk while preserving closed signals already on disk.
-    This ensures closed signals are never lost when the in-memory list is trimmed.
-    """
     try:
-        # Pastikan direktori parent exists (untuk Railway volume)
         SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        
         existing = []
         if SIGNALS_FILE.exists():
             existing = json.loads(SIGNALS_FILE.read_text())
-
-        # Build a map from disk (all signals)
         sig_map = {s["id"]: s for s in existing}
-
-        # Overlay current open signals (updates any that changed)
         for s in open_signals:
             sig_map[s["id"]] = s
-
-        # Sort newest-first and trim
         final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
         SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
-        
-        print(f"✅ Signals saved to {SIGNALS_FILE.absolute()} | total: {len(final[:MAX_SIGNALS])}")
-        
+        print(f"✅ Signals saved | total: {len(final[:MAX_SIGNALS])}")
     except Exception as e:
         logger.warning(f"Could not save signals file: {e}")
-        print(f"❌ Failed to save signals: {e}")
+
 
 def _save_closed_signal(signal: dict):
-    """
-    Persist a single closed signal to disk (upsert by id).
-    Called right before removing the signal from the in-memory open list.
-    """
     try:
-        # Pastikan direktori parent exists (untuk Railway volume)
         SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        
         existing = []
         if SIGNALS_FILE.exists():
             existing = json.loads(SIGNALS_FILE.read_text())
-        
         sig_map = {s["id"]: s for s in existing}
         sig_map[signal["id"]] = signal
-        
         final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
         SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
-        
-        print(f"✅ Closed signal saved to {SIGNALS_FILE.absolute()}: {signal['id']} | result: {signal.get('result')}")
-        
+        print(f"✅ Closed signal saved: {signal['id']} | result: {signal.get('result')}")
     except Exception as e:
         logger.warning(f"Could not save closed signal: {e}")
-        print(f"❌ Failed to save closed signal {signal.get('id')}: {e}")
 
 
 def _load_daily_state() -> dict:
@@ -137,9 +118,8 @@ def _save_daily_state(state: dict):
 
 
 def _seconds_until_midnight() -> float:
-    """Seconds remaining until next local midnight."""
     now      = datetime.now()
-    midnight = datetime(now.year, now.month, now.day, 0, 0, 0) + timedelta(days=1)
+    midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
     return max((midnight - now).total_seconds(), 60)
 
 
@@ -155,7 +135,6 @@ class BotEngine:
             "status":             "IDLE",
             "last_signal":        None,
             "last_error":         None,
-            # Only OPEN signals kept in memory; closed ones live on disk only
             "signals":            [],
             "trade_count":        0,
             "win_count":          0,
@@ -164,7 +143,6 @@ class BotEngine:
             "total_pnl_pct":      0.0,
             "current_symbol":     None,
             "symbols_scanned":    0,
-            # Daily tracking
             "scan_date":          "",
             "daily_signal_count": 0,
             "daily_scanned":      [],
@@ -172,19 +150,17 @@ class BotEngine:
         self._rebuild_counters()
         self._restore_daily_state()
 
-        self._task: Optional[asyncio.Task] = None
-        self._listeners: List[Callable]    = []
-        self._active_signal = None
+        self._task:           Optional[asyncio.Task] = None
+        self._listeners:      List[Callable]         = []
+        self._active_signal                          = None
+
+        # Map bitget_order_id → signal_id for WS-driven close
+        self._order_to_signal: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
-    # Rebuild counters from persisted signals
+    # Rebuild counters from disk
     # ------------------------------------------------------------------
     def _rebuild_counters(self):
-        """
-        Rebuild win/loss counters and restore open signals from disk.
-        trade_count = only closed trades (TP or SL), matching WR denominator.
-        INVALIDATED signals are excluded from all counters.
-        """
         all_signals = _load_signals()
         for s in all_signals:
             result = s.get("result")
@@ -200,13 +176,11 @@ class BotEngine:
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
             elif status == "OPEN":
-                # Restore only genuine open signals (not invalidated ones)
                 self.state["signals"].append(s)
-
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
 
     def _restore_daily_state(self):
-        ds = _load_daily_state()
+        ds    = _load_daily_state()
         today = date.today().isoformat()
         if ds.get("date") == today:
             self.state["scan_date"]          = today
@@ -215,7 +189,7 @@ class BotEngine:
             self.state["symbols_scanned"]    = len(self.state["daily_scanned"])
 
     # ------------------------------------------------------------------
-    # Listener management
+    # Listeners
     # ------------------------------------------------------------------
     def add_listener(self, fn: Callable):
         if fn not in self._listeners:
@@ -250,17 +224,77 @@ class BotEngine:
     async def shutdown(self):
         await self.stop()
         await mexc_client.close()
+        await bitget_client.close()
         await deepseek_ai.close()
 
     # ------------------------------------------------------------------
-    # Main loop  —  daily rhythm
+    # Bitget WebSocket callback — called by bitget_ws.py
+    # Updates open signals when Bitget reports a position was closed
+    # ------------------------------------------------------------------
+    def handle_bitget_order_update(self, event: str, data: dict):
+        """
+        Called by bitget_ws when an order status changes.
+        Looks for filled/closed orders that match open signals and
+        marks them TP or SL accordingly.
+        """
+        orders = data.get("orders", [])
+        for o in orders:
+            order_id = o.get("orderId")
+            pnl      = o.get("pnl")
+            status   = o.get("status", "")
+
+            if status not in ("filled", "full_fill"):
+                continue
+
+            sig_id = self._order_to_signal.get(order_id)
+            if not sig_id:
+                continue
+
+            signal = self._find_signal(sig_id)
+            if not signal:
+                continue
+
+            # Determine TP or SL from PnL
+            try:
+                pnl_val = float(pnl or 0)
+            except (ValueError, TypeError):
+                pnl_val = 0.0
+
+            result    = "TP" if pnl_val >= 0 else "SL"
+            pnl_pct   = round(pnl_val / max(float(signal.get("entry") or 1), 1) * 100, 4)
+
+            signal["status"]       = "CLOSED"
+            signal["result"]       = result
+            signal["pnl_pct"]      = pnl_pct
+            signal["closed_at"]    = int(time.time() * 1000)
+            signal["closed_price"] = float(o.get("fillPrice") or 0)
+
+            self.state["trade_count"] += 1
+            if result == "TP":
+                self.state["win_count"] += 1
+            else:
+                self.state["loss_count"] += 1
+            self.state["total_pnl_pct"] = round(
+                self.state["total_pnl_pct"] + pnl_pct, 4)
+
+            _save_closed_signal(signal)
+            self.state["signals"] = [
+                s for s in self.state["signals"] if s["id"] != sig_id
+            ]
+
+            self._emit("signal_closed", signal)
+            print(f"  [Bitget WS] Signal {sig_id} closed via order: "
+                  f"{result} | PnL: {pnl_pct}%")
+
+    # ------------------------------------------------------------------
+    # Main loop  —  daily rhythm (unchanged from original)
     # ------------------------------------------------------------------
     async def _loop(self):
         logger.info("Bot scanner loop started")
         print("Bot scanner loop started")
 
         n_workers = max(len(deepseek_ai.clients), 1)
-        print(f"[BotEngine] Parallel workers: {n_workers} (DeepSeek tokens loaded)")
+        print(f"[BotEngine] Parallel workers: {n_workers}")
 
         await asyncio.sleep(2)
 
@@ -268,7 +302,6 @@ class BotEngine:
             try:
                 today = date.today().isoformat()
 
-                # ── New day: reset daily counters ────────────────────────
                 if self.state["scan_date"] != today:
                     self.state["scan_date"]          = today
                     self.state["daily_signal_count"] = 0
@@ -279,16 +312,14 @@ class BotEngine:
                         "daily_signal_count": 0,
                         "scanned_symbols":    [],
                     })
-                    print(f"[{today}] New day — collecting {MAX_DAILY_SIGNALS} signals "
-                          f"({n_workers} coins/batch)")
+                    print(f"[{today}] New day — collecting {MAX_DAILY_SIGNALS} signals")
 
-                # ── Already hit quota today? sleep until midnight ─────────
                 if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
                     secs = _seconds_until_midnight()
                     hh   = int(secs // 3600)
                     mm   = int((secs % 3600) // 60)
                     msg  = (f"Daily quota reached "
-                            f"({self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS} signals). "
+                            f"({self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS}). "
                             f"Next run in {hh}h {mm}m.")
                     print(msg)
                     self._emit("status", msg)
@@ -297,18 +328,16 @@ class BotEngine:
                     self.state["status"] = "RUNNING"
                     continue
 
-                # ── Build a fresh symbol pool (excluding already scanned) ─
                 pool = await self._build_pool(exclude=set(self.state["daily_scanned"]))
                 if not pool:
                     secs = _seconds_until_midnight()
-                    print(f"Pool exhausted without reaching quota. Waiting {int(secs)}s.")
+                    print(f"Pool exhausted. Waiting {int(secs)}s.")
                     self._emit("status", "All symbols scanned — waiting next day.")
                     self.state["status"] = "WAITING_NEXT_DAY"
                     await asyncio.sleep(secs)
                     self.state["status"] = "RUNNING"
                     continue
 
-                # ── Scan pool in parallel batches ─────────────────────────
                 i = 0
                 while i < len(pool):
                     if not self.running:
@@ -317,31 +346,26 @@ class BotEngine:
                         break
 
                     batch = pool[i:i + n_workers]
-                    i += n_workers
+                    i    += n_workers
 
-                    print(f"\n[Batch] Analysing {len(batch)} coins in parallel: "
-                          f"{', '.join(batch)}")
+                    print(f"\n[Batch] {', '.join(batch)}")
                     self._emit("status", f"Batch: {', '.join(batch)}")
 
-                    # Step 1: Fetch candles + ticker for all symbols in parallel
                     market_tasks = [
                         asyncio.create_task(self._fetch_market_data(sym))
                         for sym in batch
                     ]
                     market_results = await asyncio.gather(*market_tasks, return_exceptions=True)
 
-                    # Step 2: Build AI analysis items
-                    ai_items   = []
-                    skip_syms  = []
+                    ai_items  = []
+                    skip_syms = []
 
                     for sym, mresult in zip(batch, market_results):
                         if isinstance(mresult, Exception) or mresult is None:
-                            print(f"  {sym}: market data error — skip")
                             skip_syms.append(sym)
                             continue
                         candles_by_tf, current_price = mresult
                         if not candles_by_tf or current_price <= 0:
-                            print(f"  {sym}: insufficient data — skip")
                             skip_syms.append(sym)
                             continue
                         ai_items.append((sym, candles_by_tf, current_price))
@@ -353,29 +377,21 @@ class BotEngine:
                         await asyncio.sleep(INTER_SYMBOL_DELAY)
                         continue
 
-                    # Step 3: Run AI analysis in parallel
                     ai_items = ai_items[:n_workers]
-
                     print(f"  Sending {len(ai_items)} AI requests in parallel…")
-                    # Pass realtime current_price so AI knows the live price
                     ai_batch = [(sym, tfs, price) for sym, tfs, price in ai_items]
                     signals  = await deepseek_ai.analyze_batch(ai_batch)
 
-                    # Step 4: Process each result
                     for (sym, candles_by_tf, current_price), signal in zip(ai_items, signals):
                         found = self._process_signal(sym, current_price, signal, today)
                         self._mark_scanned(sym, today)
 
                         if found:
-                            progress = (f"Signal {self.state['daily_signal_count']}"
-                                        f"/{MAX_DAILY_SIGNALS} collected.")
                             self._emit("progress", {
                                 "daily_signal_count": self.state["daily_signal_count"],
                                 "max_daily_signals":  MAX_DAILY_SIGNALS,
                                 "symbols_scanned":    self.state["symbols_scanned"],
                             })
-                            print(f"  📊 {progress}")
-
                             if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
                                 break
 
@@ -395,9 +411,10 @@ class BotEngine:
         print("Scanner loop ended")
 
     # ------------------------------------------------------------------
-    # Fetch candles + ticker for a single symbol (used in parallel)
+    # Fetch candles + ticker (MEXC) — unchanged
     # ------------------------------------------------------------------
     async def _fetch_market_data(self, symbol: str):
+        """symbol is MEXC format e.g. BTC_USDT"""
         candles_by_tf: Dict[str, list] = {}
         for tf in TIMEFRAMES:
             try:
@@ -423,7 +440,33 @@ class BotEngine:
         return candles_by_tf, current_price
 
     # ------------------------------------------------------------------
-    # Mark a symbol as scanned and persist daily state
+    # Build symbol pool  — NOW from Bitget (converted to MEXC format)
+    # ------------------------------------------------------------------
+    async def _build_pool(self, exclude: set = None) -> List[str]:
+        exclude = exclude or set()
+        self._emit("status", "Fetching contract list from Bitget…")
+        try:
+            contracts = await bitget_client.get_contracts()
+        except Exception as e:
+            logger.error(f"Failed to fetch Bitget contracts: {e}")
+            self._emit("error", f"Contract fetch error: {e}")
+            # Fallback to required symbols
+            return [s for s in REQUIRED_SYMBOLS if s not in exclude]
+
+        # contracts return "symbol" in Bitget format (BTCUSDT);
+        # "mexcSymbol" is pre-computed in bitget_client (BTC_USDT)
+        all_symbols = [c["mexcSymbol"] for c in contracts if c.get("mexcSymbol")]
+
+        mandatory = [s for s in REQUIRED_SYMBOLS
+                     if s in all_symbols and s not in exclude]
+        pool      = [s for s in all_symbols
+                     if s not in REQUIRED_SYMBOLS and s not in exclude]
+        random.shuffle(pool)
+
+        return mandatory + pool
+
+    # ------------------------------------------------------------------
+    # Mark scanned
     # ------------------------------------------------------------------
     def _mark_scanned(self, symbol: str, today: str):
         if symbol not in self.state["daily_scanned"]:
@@ -436,51 +479,49 @@ class BotEngine:
         })
 
     # ------------------------------------------------------------------
-    # Process one AI signal result
-    # Returns True if actionable (LONG/SHORT), False if NO TRADE
+    # Process one AI signal  — places real Bitget order if actionable
     # ------------------------------------------------------------------
     def _process_signal(self, symbol: str, current_price: float,
                         signal: dict, today: str) -> bool:
+        """symbol is MEXC format (BTC_USDT) throughout the engine."""
         self.state["current_symbol"] = symbol
         decision = signal.get("decision", "NO TRADE")
 
         if decision == "NO TRADE":
             self.state["no_trade_count"] += 1
-            print(f"  {symbol} → NO TRADE (not counted toward daily quota)")
+            print(f"  {symbol} → NO TRADE")
             return False
 
-        # Actionable signal
         sig_id = str(uuid.uuid4())[:8]
         signal_record = {
-            "id":            sig_id,
-            "symbol":        symbol,
-            "timestamp":     int(time.time() * 1000),
-            "current_price": current_price,
-            "trend":         signal.get("trend"),
-            "pattern":       signal.get("pattern"),
-            "decision":      decision,
-            "entry":         signal.get("entry"),
-            "tp":            signal.get("tp"),
-            "sl":            signal.get("sl"),
-            "invalidation":  signal.get("invalidation"),
-            "reason":        signal.get("reason"),
-            "confidence":    signal.get("confidence"),
-            "status":        "OPEN",
-            "result":        None,
-            "pnl_pct":       None,
-            "closed_at":     None,
-            "closed_price":  None,
-            # FIX BUG 2: track whether price has reached entry yet
-            "entry_hit":     False,
+            "id":             sig_id,
+            "symbol":         symbol,            # MEXC format stored
+            "bitgetSymbol":   mexc_to_bitget(symbol),  # e.g. BTCUSDT
+            "timestamp":      int(time.time() * 1000),
+            "current_price":  current_price,
+            "trend":          signal.get("trend"),
+            "pattern":        signal.get("pattern"),
+            "decision":       decision,
+            "entry":          signal.get("entry"),
+            "tp":             signal.get("tp"),
+            "sl":             signal.get("sl"),
+            "invalidation":   signal.get("invalidation"),
+            "reason":         signal.get("reason"),
+            "confidence":     signal.get("confidence"),
+            "status":         "OPEN",
+            "result":         None,
+            "pnl_pct":        None,
+            "closed_at":      None,
+            "closed_price":   None,
+            "entry_hit":      False,
+            "bitget_order_id": None,
         }
 
         self.state["signals"].insert(0, signal_record)
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
         _save_signals(self.state["signals"])
 
-        # FIX BUG 2: validate TP/SL are on the correct side of entry.
-        # If AI returns inverted values (tp < entry for LONG, or tp > entry for SHORT),
-        # reject the signal to prevent instant false-wins.
+        # Validate TP/SL direction
         _entry = signal_record.get("entry") or current_price
         _tp    = signal_record.get("tp")
         _sl    = signal_record.get("sl")
@@ -490,7 +531,7 @@ class BotEngine:
                 invalid_long  = (decision == "LONG"  and not (t > e > s))
                 invalid_short = (decision == "SHORT" and not (t < e < s))
                 if invalid_long or invalid_short:
-                    print(f"  ⚠️  {symbol} {decision} REJECTED — invalid TP/SL direction: "
+                    print(f"  ⚠️  {symbol} {decision} REJECTED — invalid TP/SL: "
                           f"entry={e} tp={t} sl={s}")
                     self.state["signals"] = [
                         x for x in self.state["signals"] if x["id"] != sig_id
@@ -498,47 +539,111 @@ class BotEngine:
                     _save_signals(self.state["signals"])
                     return False
             except (TypeError, ValueError):
-                pass  # non-numeric values — let _monitor_signal handle
+                pass
 
         self.state["last_signal"]        = signal_record
-        # FIX BUG 1: don't increment trade_count here anymore;
-        # trade_count only counts closed trades (TP/SL) for accurate WR
         self.state["daily_signal_count"] += 1
-
         self._emit("signal", signal_record)
+
         print(f"  ✅ {symbol} {decision} @ {current_price} | "
               f"TP={signal.get('tp')} SL={signal.get('sl')} | "
               f"conf={signal.get('confidence')}% "
               f"[{self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS} today]")
 
+        # ── Place real Bitget Demo order ─────────────────────────────
+        # Fire-and-forget so it doesn't block the scanner loop
+        asyncio.create_task(
+            self._place_bitget_order(sig_id, signal_record)
+        )
+
+        # Fallback monitor (will stop early if WS closes signal first)
         asyncio.create_task(self._monitor_signal(sig_id))
+
         return True
 
     # ------------------------------------------------------------------
-    # Build a shuffled symbol pool, required coins first
+    # Place limit order on Bitget Demo
     # ------------------------------------------------------------------
-    async def _build_pool(self, exclude: set = None) -> List[str]:
-        exclude = exclude or set()
-        self._emit("status", "Fetching contract list from MEXC…")
+    async def _place_bitget_order(self, sig_id: str, signal: dict):
+        """Place a limit order with preset TP/SL on Bitget demo account."""
+        if not bitget_client.api_key:
+            print(f"  [Bitget] No API key — skipping order for {sig_id}")
+            return
+
+        if BITGET_MARGIN_USDT <= 0:
+            print(f"  [Bitget] BITGET_MARGIN_USDT=0 — order placement disabled")
+            return
+
+        decision   = signal["decision"]
+        entry      = signal.get("entry")
+        tp         = signal.get("tp")
+        sl         = signal.get("sl")
+        bitget_sym = signal["bitgetSymbol"]
+
+        if not entry or not tp or not sl:
+            print(f"  [Bitget] Missing entry/tp/sl for {sig_id} — skip order")
+            return
+
         try:
-            contracts = await mexc_client.get_contracts()
+            entry_f = float(entry)
+            # Calculate size: margin * leverage / entry price
+            # Get live balance to be safe
+            balance_data = await bitget_client.get_account_balance()
+            available    = balance_data.get("available", BITGET_MARGIN_USDT)
+            margin       = min(BITGET_MARGIN_USDT, available * 0.95)
+            size         = round(margin * BITGET_LEVERAGE / entry_f, 4)
+
+            # Set leverage first
+            hold_side = "long" if decision == "LONG" else "short"
+            await bitget_client.set_leverage(bitget_sym, BITGET_LEVERAGE, hold_side)
+
+            side = "buy" if decision == "LONG" else "sell"
+
+            result = await bitget_client.place_order(
+                symbol      = bitget_sym,
+                side        = side,
+                trade_side  = "open",
+                size        = str(size),
+                price       = str(entry_f),
+                tp_price    = str(float(tp)),
+                sl_price    = str(float(sl)),
+                margin_mode = BITGET_MARGIN_MODE,
+                leverage    = BITGET_LEVERAGE,
+            )
+
+            if result["ok"]:
+                order_id = result.get("orderId")
+                signal["bitget_order_id"] = order_id
+                if order_id:
+                    self._order_to_signal[order_id] = sig_id
+                _save_signals(self.state["signals"])
+                print(f"  ✅ [Bitget] Order placed for {sig_id} "
+                      f"({bitget_sym} {side}) | orderId={order_id}")
+                self._emit("order_placed", {
+                    "sig_id":   sig_id,
+                    "symbol":   bitget_sym,
+                    "side":     side,
+                    "size":     size,
+                    "price":    entry_f,
+                    "tp":       tp,
+                    "sl":       sl,
+                    "orderId":  order_id,
+                })
+            else:
+                print(f"  ❌ [Bitget] Order failed for {sig_id}: {result.get('msg')}")
+                self._emit("order_error", {
+                    "sig_id": sig_id,
+                    "symbol": bitget_sym,
+                    "msg":    result.get("msg"),
+                })
+
         except Exception as e:
-            logger.error(f"Failed to fetch contracts: {e}")
-            self._emit("error", f"Contract fetch error: {e}")
-            return [s for s in REQUIRED_SYMBOLS if s not in exclude]
-
-        all_symbols = [c["symbol"] for c in contracts]
-
-        mandatory = [s for s in REQUIRED_SYMBOLS
-                     if s in all_symbols and s not in exclude]
-        pool      = [s for s in all_symbols
-                     if s not in REQUIRED_SYMBOLS and s not in exclude]
-        random.shuffle(pool)
-
-        return mandatory + pool
+            print(f"  ❌ [Bitget] Exception placing order for {sig_id}: {e}")
+            import traceback; traceback.print_exc()
 
     # ------------------------------------------------------------------
-    # Monitor a signal until TP / SL / timeout
+    # Fallback monitor (MEXC price check) — same as original
+    # Primary close tracking is via Bitget WS; this is a safety net.
     # ------------------------------------------------------------------
     async def _monitor_signal(self, sig_id: str):
         signal = self._find_signal(sig_id)
@@ -557,19 +662,19 @@ class BotEngine:
 
         max_duration = 60 * 60 * 8   # 8 hours
         start        = time.time()
-
-        # FIX BUG 2: gate — only start monitoring TP/SL after entry is hit
-        entry_hit = False
+        entry_hit    = False
 
         while time.time() - start < max_duration:
             await asyncio.sleep(10)
             if not self.running:
                 break
 
-            # Re-fetch signal in case it was removed (invalidated)
             signal = self._find_signal(sig_id)
             if not signal:
-                break
+                break  # Already closed by WS
+
+            if signal.get("status") == "CLOSED":
+                break  # WS already handled it
 
             try:
                 ticker = await mexc_client.get_ticker(symbol)
@@ -580,66 +685,52 @@ class BotEngine:
             if price <= 0:
                 continue
 
-            # ── Cek invalidasi (auto-hapus signal) ──────────────────────
+            # Invalidation check
             if inv_price and inv_price > 0:
                 inv_hit = (
                     (direction == "LONG"  and price <= inv_price) or
                     (direction == "SHORT" and price >= inv_price)
                 )
                 if inv_hit:
-                    # FIX BUG 1: save signal as INVALIDATED on disk BEFORE
-                    # removing from memory — prevents zombie OPEN signals in history.
                     signal["status"]       = "INVALIDATED"
                     signal["result"]       = "INVALIDATED"
                     signal["closed_at"]    = int(time.time() * 1000)
                     signal["closed_price"] = price
                     _save_closed_signal(signal)
-
                     self.state["signals"] = [
                         s for s in self.state["signals"] if s["id"] != sig_id
                     ]
-                    self.state["daily_signal_count"] = max(0, self.state["daily_signal_count"] - 1)
+                    self.state["daily_signal_count"] = max(
+                        0, self.state["daily_signal_count"] - 1)
                     self._emit("signal_invalidated", {
-                        "id":        sig_id,
-                        "symbol":    symbol,
-                        "price":     price,
-                        "inv_price": inv_price,
-                        "direction": direction,
+                        "id": sig_id, "symbol": symbol, "price": price,
                         "timestamp": int(time.time() * 1000),
                     })
-                    print(f"  ❌ Signal {sig_id} ({symbol} {direction}) "
-                          f"INVALIDATED @ {price} | inv_level={inv_price}")
+                    print(f"  ❌ Signal {sig_id} INVALIDATED @ {price}")
                     break
 
-            # ── FIX BUG 2: wait for price to reach entry first ───────────
+            # Entry gate
             if not entry_hit:
                 if entry <= 0:
-                    # No valid entry price from AI — skip gate
                     entry_hit = True
                 elif direction == "LONG"  and price >= entry:
                     entry_hit = True
                     signal["entry_hit"] = True
-                    print(f"  📍 {sig_id} ({symbol} LONG) entry hit @ {price}")
                 elif direction == "SHORT" and price <= entry:
                     entry_hit = True
                     signal["entry_hit"] = True
-                    print(f"  📍 {sig_id} ({symbol} SHORT) entry hit @ {price}")
                 else:
-                    # Price hasn't reached entry yet — keep waiting
                     continue
-                # FIX BUG 2B: skip TP/SL check in the SAME tick entry is hit.
-                # Prevents a phantom win when price barely touches entry and TP
-                # is already satisfied (usually due to inverted AI levels).
                 continue
 
-            # ── Cek TP / SL ─────────────────────────────────────────────
+            # TP/SL check
             hit = None
             if direction == "LONG":
-                if price >= tp:   hit = "TP"
-                elif price <= sl: hit = "SL"
+                if price >= float(tp):   hit = "TP"
+                elif price <= float(sl): hit = "SL"
             elif direction == "SHORT":
-                if price <= tp:   hit = "TP"
-                elif price >= sl: hit = "SL"
+                if price <= float(tp):   hit = "TP"
+                elif price >= float(sl): hit = "SL"
 
             if hit:
                 pnl_pct = 0.0
@@ -655,7 +746,6 @@ class BotEngine:
                 signal["closed_at"]    = int(time.time() * 1000)
                 signal["closed_price"] = price
 
-                # FIX BUG 1: increment trade_count only on close
                 self.state["trade_count"] += 1
                 if hit == "TP":
                     self.state["win_count"] += 1
@@ -664,16 +754,13 @@ class BotEngine:
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + pnl_pct, 4)
 
-                # FIX BUG 3: persist closed signal BEFORE removing from memory
                 _save_closed_signal(signal)
-
-                # Remove from in-memory open list → no longer shows in recent signals
                 self.state["signals"] = [
                     s for s in self.state["signals"] if s["id"] != sig_id
                 ]
-
                 self._emit("signal_closed", signal)
-                print(f"  Signal {sig_id} closed: {hit} @ {price} | PnL: {pnl_pct}%")
+                print(f"  Signal {sig_id} closed (fallback monitor): "
+                      f"{hit} @ {price} | PnL: {pnl_pct}%")
                 break
 
     def _find_signal(self, sig_id: str) -> Optional[Dict]:
@@ -686,10 +773,9 @@ class BotEngine:
     # State / Stats
     # ------------------------------------------------------------------
     def get_state(self) -> dict:
-        wins   = self.state["win_count"]
-        losses = self.state["loss_count"]
-        closed = wins + losses
-        # FIX BUG 1: winrate = wins / (wins + losses), not wins / trade_count
+        wins    = self.state["win_count"]
+        losses  = self.state["loss_count"]
+        closed  = wins + losses
         winrate = round(wins / closed * 100, 2) if closed > 0 else 0.0
         return {
             **self.state,
@@ -715,6 +801,7 @@ class BotEngine:
             "scan_date":          "",
             "daily_scanned":      [],
         })
+        self._order_to_signal.clear()
         _save_signals([])
         _save_daily_state({"date": "", "daily_signal_count": 0, "scanned_symbols": []})
 
