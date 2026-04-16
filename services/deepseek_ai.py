@@ -64,25 +64,25 @@ STRICT TREND RULE:
 WICK + VOID DIRECTION RULE (CRITICAL):
 
 - UP trend:
-  → use LOWER WICK voids (void below price)
-  → ignore upper wick voids
+  → use UPPER WICK voids (see some candle before)
+  → ignore lower wick voids
 
 - DOWN trend:
-  → use UPPER WICK voids (void above price)
-  → ignore lower wick voids
+  → use lower WICK voids (see some candle before)
+  → ignore upper wick voids
 
 IMPORTANT:
 - The void must be in the direction of a RETRACEMENT, not continuation
 
 Logic:
-- LONG = buy lower → void must be BELOW
-- SHORT = sell higher → void must be ABOVE
+- LONG = buy lower → void must be BELOW current price
+- SHORT = sell higher → void must be ABOVE current price
 
 - NEVER choose a void that would require chasing price
 
 ----------------------------------------
 ENTRY DISTANCE RULE:
-- Entry MUST be placed at a clear void / imbalance
+- Entry MUST be placed at a clear void 
 - Entry must NOT be near current price without structure
 - If price is already near the level → NO TRADE
 - Entry should feel like a LIMIT order (far from price), not a market entry
@@ -97,10 +97,9 @@ NO TRADE RULE:
 REVERSAL RULE (ADVANCED):
 Reversal trades are allowed ONLY if ALL conditions are met:
 
-1. There is a clear void (4H / 2H)
+1. There is a clear void (4H / 2H , If you find it on a higher timeframe, then check further back using a lower timeframe. If you find a pattern similar to the training data, then verify the previous high/low from the higher timeframe.)
 2. The level comes from past price action (look-back structure)
-3. Strong wick rejection exists at that level
-4. The level has NOT been revisited
+3. The level has NOT been revisited
 
 If ALL valid:
 → Counter-trend entry is allowed
@@ -130,7 +129,6 @@ Reason: <short explanation>
 
 ----------------------------------------
 IMPORTANT:
-- Do NOT use indicators
 - Do NOT guess
 - ONLY act if pattern matches training data behavior
 - Think like a patient trader waiting for price to reach a level
