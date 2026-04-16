@@ -5,11 +5,6 @@ Data sources:
   • Symbol pool  →  MEXC USDT-FUTURES (get_contracts)
   • Candles      →  MEXC (best free kline data)
   • AI analysis  →  DeepSeek
-
-Trading:
-  • No real exchange API — fully self-managed virtual system
-  • Virtual balance tracked in virtual_exchange.py
-  • Entry / TP / SL / Invalidation monitored via MEXC live price
 """
 
 import asyncio
