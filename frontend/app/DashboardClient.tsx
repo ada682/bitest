@@ -52,7 +52,7 @@ export default function DashboardClient() {
   const [historyLoading,  setHistoryLoading]  = useState(false);
   const [sidebarOpen,     setSidebarOpen]     = useState(false);
   // Virtual exchange balance (realtime)
-  const [vBalance,        setVBalance]        = useState<VirtualBalance>({
+  const [vBalance,        setVBalance]        = useState<Balance>({
     balance: 0, initial_balance: 0, leverage: 10, entry_usdt: 100,
   });
   const flashRef = useRef<Set<string>>(new Set());
@@ -74,7 +74,7 @@ export default function DashboardClient() {
     fetch(`${API_BASE}/api/bot/balance`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.data) setVBalance(json.data as VirtualBalance);
+        if (json.data) setVBalance(json.data as Balance);
       })
       .catch(() => {});
   }, []);
