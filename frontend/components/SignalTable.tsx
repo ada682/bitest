@@ -13,17 +13,46 @@ function fmt(n?: number | null, d = 4) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: d });
 }
 
-function PnlCell({ pnl }: { pnl: number | null | undefined }) {
+function PnlCell({ pnl, usdt }: { pnl: number | null | undefined; usdt?: number | null }) {
   if (pnl == null) return <span className="text-muted">—</span>;
   const pos = pnl >= 0;
   return (
-    <span className={clsx("font-mono", pos ? "text-success" : "text-danger")}>
-      {pos ? "+" : ""}{pnl.toFixed(4)}%
+    <div className="flex flex-col">
+      <span className={clsx("font-mono text-xs", pos ? "text-success" : "text-danger")}>
+        {pos ? "+" : ""}{pnl.toFixed(4)}%
+      </span>
+      {usdt != null && (
+        <span className={clsx("font-mono text-[10px]", pos ? "text-success/70" : "text-danger/70")}>
+          {pos ? "+" : ""}{usdt.toFixed(2)}$
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Shows if the signal is waiting for entry or already in an active trade */
+function EntryStatus({ signal }: { signal: Signal }) {
+  if (signal.status === "CLOSED")      return null;
+  if (signal.status === "INVALIDATED") return null;
+  if (signal.status === "NO TRADE")    return null;
+
+  if (signal.entry_hit) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[9px] font-mono font-medium uppercase tracking-wide text-accent">
+        <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+        in trade
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[9px] font-mono font-medium uppercase tracking-wide text-warning/80">
+      <span className="w-1.5 h-1.5 rounded-full bg-warning/60" />
+      watching
     </span>
   );
 }
 
-// Mobile card view for each signal row
+// Mobile card view
 function SignalCard({ s }: { s: Signal }) {
   return (
     <div className="px-4 py-3 border-b border-border/30 last:border-0">
@@ -35,7 +64,7 @@ function SignalCard({ s }: { s: Signal }) {
           <DecisionBadge decision={s.decision} />
           {s.result && <ResultBadge result={s.result} />}
         </div>
-        <PnlCell pnl={s.pnl_pct} />
+        <PnlCell pnl={s.pnl_pct} usdt={s.pnl_usdt} />
       </div>
 
       <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-[11px]">
@@ -55,15 +84,27 @@ function SignalCard({ s }: { s: Signal }) {
         </div>
       </div>
 
+      {s.status === "CLOSED" && s.closed_price != null && (
+        <div className="mt-1 text-[10px] font-mono text-muted/60">
+          closed @ ${fmt(s.closed_price, 6)}
+        </div>
+      )}
+
       <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-muted/60">
-        <span className={clsx(
-          s.status === "OPEN"     && "text-warning",
-          s.status === "CLOSED"   && "text-subtle",
-          s.status === "NO TRADE" && "text-muted/50",
-        )}>
-          {s.status}
-          {s.confidence != null ? ` · ${s.confidence}% conf` : ""}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={clsx(
+            s.status === "OPEN"        && "text-warning",
+            s.status === "CLOSED"      && "text-subtle",
+            s.status === "NO TRADE"    && "text-muted/50",
+            s.status === "INVALIDATED" && "text-danger/60",
+          )}>
+            {s.status}
+          </span>
+          <EntryStatus signal={s} />
+          {s.confidence != null ? (
+            <span className="text-muted/50">{s.confidence}% conf</span>
+          ) : null}
+        </div>
         <span>
           {new Date(s.timestamp).toLocaleString("en-US", {
             month: "2-digit", day: "2-digit",
@@ -83,16 +124,15 @@ const COLS = [
   { key: "tp",       label: "TP",       w: "w-24"  },
   { key: "sl",       label: "SL",       w: "w-24"  },
   { key: "conf",     label: "Conf.",    w: "w-14"  },
-  { key: "status",   label: "Status",   w: "w-20"  },
+  { key: "status",   label: "Status",   w: "w-28"  },
   { key: "result",   label: "Result",   w: "w-16"  },
-  { key: "pnl",      label: "PnL",      w: "w-20"  },
+  { key: "pnl",      label: "PnL",      w: "w-24"  },
 ];
 
 export default function SignalTable({ signals, loading }: Props) {
   if (loading) {
     return (
       <div>
-        {/* Mobile skeleton */}
         <div className="sm:hidden">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="px-4 py-3 border-b border-border/30">
@@ -106,7 +146,6 @@ export default function SignalTable({ signals, loading }: Props) {
             </div>
           ))}
         </div>
-        {/* Desktop skeleton */}
         <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-xs border-collapse">
             <thead>
@@ -164,7 +203,13 @@ export default function SignalTable({ signals, loading }: Props) {
           </thead>
           <tbody>
             {signals.map((s) => (
-              <tr key={s.id} className="signal-row border-b border-border/30 transition-colors duration-100">
+              <tr
+                key={s.id}
+                className={clsx(
+                  "signal-row border-b border-border/30 transition-colors duration-100",
+                  s.entry_hit && s.status === "OPEN" && "bg-accent/[0.03]",
+                )}
+              >
                 <td className="py-2.5 px-3 font-mono text-muted whitespace-nowrap">
                   {new Date(s.timestamp).toLocaleString("en-US", {
                     month: "2-digit", day: "2-digit",
@@ -182,21 +227,34 @@ export default function SignalTable({ signals, loading }: Props) {
                 <td className="py-2.5 px-3 font-mono text-danger/80">{s.sl ? `$${fmt(s.sl, 6)}` : "—"}</td>
                 <td className="py-2.5 px-3 font-mono text-muted">{s.confidence != null ? `${s.confidence}%` : "—"}</td>
                 <td className="py-2.5 px-3">
-                  <span className={clsx("text-[10px] font-mono uppercase",
-                    s.status === "OPEN"     && "text-warning",
-                    s.status === "CLOSED"   && "text-subtle",
-                    s.status === "NO TRADE" && "text-muted/60",
-                  )}>
-                    {s.status}
-                  </span>
+                  <div className="flex flex-col gap-0.5">
+                    <span className={clsx("text-[10px] font-mono uppercase",
+                      s.status === "OPEN"        && "text-warning",
+                      s.status === "CLOSED"      && "text-subtle",
+                      s.status === "NO TRADE"    && "text-muted/60",
+                      s.status === "INVALIDATED" && "text-danger/60",
+                    )}>
+                      {s.status}
+                    </span>
+                    <EntryStatus signal={s} />
+                    {/* Show close price for closed signals */}
+                    {s.status === "CLOSED" && s.closed_price != null && (
+                      <span className="text-[9px] font-mono text-muted/50">
+                        @ ${fmt(s.closed_price, 6)}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="py-2.5 px-3">
-                  <ResultBadge result={s.result} />
-                  {!s.result && s.status !== "NO TRADE" && (
+                  {s.result ? (
+                    <ResultBadge result={s.result} />
+                  ) : s.status !== "NO TRADE" ? (
                     <span className="text-[10px] font-mono text-muted/50">—</span>
-                  )}
+                  ) : null}
                 </td>
-                <td className="py-2.5 px-3"><PnlCell pnl={s.pnl_pct} /></td>
+                <td className="py-2.5 px-3">
+                  <PnlCell pnl={s.pnl_pct} usdt={s.pnl_usdt} />
+                </td>
               </tr>
             ))}
           </tbody>
