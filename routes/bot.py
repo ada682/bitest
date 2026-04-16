@@ -61,10 +61,17 @@ async def get_state(request: Request):
 
 @router.get("/signals")
 async def get_signals(request: Request, limit: int = 50):
-    """Return most recent signals with status."""
+    """
+    Return most recent OPEN signals only.
+    FIX BUG 3: closed signals are filtered out here so they no longer
+    appear in recent signals — they live in signal history (signals.json) only.
+    """
     engine = request.app.state.bot_engine
-    signals = engine.state.get("signals", [])[:limit]
-    return {"data": signals, "total": len(engine.state.get("signals", []))}
+    all_signals = engine.state.get("signals", [])
+    # In-memory list already contains only OPEN signals (closed ones are
+    # removed on close), but we filter defensively just in case.
+    open_signals = [s for s in all_signals if s.get("status") != "CLOSED"]
+    return {"data": open_signals[:limit], "total": len(open_signals)}
 
 
 @router.get("/stats")
@@ -72,19 +79,20 @@ async def get_stats(request: Request):
     """Return win/loss stats and winrate."""
     engine = request.app.state.bot_engine
     s = engine.state
-    trades = s.get("trade_count", 0)
-    wins = s.get("win_count", 0)
-    losses = s.get("loss_count", 0)
+    wins     = s.get("win_count", 0)
+    losses   = s.get("loss_count", 0)
     no_trade = s.get("no_trade_count", 0)
     total_pnl = s.get("total_pnl_pct", 0.0)
-    winrate = round(wins / trades * 100, 2) if trades > 0 else 0.0
+    closed   = wins + losses
+    # FIX BUG 1: winrate = wins / closed trades, not wins / all signals
+    winrate  = round(wins / closed * 100, 2) if closed > 0 else 0.0
     return {
         "data": {
-            "trade_count": trades,
-            "win_count": wins,
-            "loss_count": losses,
+            "trade_count": closed,         # total closed trades
+            "win_count":   wins,
+            "loss_count":  losses,
             "no_trade_count": no_trade,
-            "winrate": winrate,
+            "winrate":     winrate,
             "total_pnl_pct": total_pnl,
         }
     }
@@ -128,6 +136,9 @@ async def websocket_endpoint(ws: WebSocket):
 @router.get("/status/debug")
 async def debug_status(request: Request):
     engine = request.app.state.bot_engine
+    wins   = engine.state["win_count"]
+    losses = engine.state["loss_count"]
+    closed = wins + losses
     return {
         "running": engine.running,
         "task_exists": engine._task is not None,
@@ -135,9 +146,10 @@ async def debug_status(request: Request):
         "task_cancelled": engine._task.cancelled() if engine._task else None,
         "active_signal": engine._active_signal,
         "state_summary": {
-            "status": engine.state["status"],
-            "trade_count": engine.state["trade_count"],
-            "win_count": engine.state["win_count"],
-            "loss_count": engine.state["loss_count"],
+            "status":      engine.state["status"],
+            "trade_count": closed,
+            "win_count":   wins,
+            "loss_count":  losses,
+            "winrate":     round(wins / closed * 100, 2) if closed > 0 else 0.0,
         },
     }
