@@ -59,11 +59,45 @@ def _load_signals() -> list:
     return []
 
 
-def _save_signals(signals: list):
+def _save_signals(open_signals: list):
+    """
+    Save open signals to disk while preserving closed signals already on disk.
+    This ensures closed signals are never lost when the in-memory list is trimmed.
+    """
     try:
-        SIGNALS_FILE.write_text(json.dumps(signals[:MAX_SIGNALS], indent=2))
+        existing = []
+        if SIGNALS_FILE.exists():
+            existing = json.loads(SIGNALS_FILE.read_text())
+
+        # Build a map from disk (all signals)
+        sig_map = {s["id"]: s for s in existing}
+
+        # Overlay current open signals (updates any that changed)
+        for s in open_signals:
+            sig_map[s["id"]] = s
+
+        # Sort newest-first and trim
+        final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
+        SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
     except Exception as e:
         logger.warning(f"Could not save signals file: {e}")
+
+
+def _save_closed_signal(signal: dict):
+    """
+    Persist a single closed signal to disk (upsert by id).
+    Called right before removing the signal from the in-memory open list.
+    """
+    try:
+        existing = []
+        if SIGNALS_FILE.exists():
+            existing = json.loads(SIGNALS_FILE.read_text())
+        sig_map = {s["id"]: s for s in existing}
+        sig_map[signal["id"]] = signal
+        final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
+        SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
+    except Exception as e:
+        logger.warning(f"Could not save closed signal: {e}")
 
 
 def _load_daily_state() -> dict:
@@ -101,43 +135,54 @@ class BotEngine:
             "status":             "IDLE",
             "last_signal":        None,
             "last_error":         None,
-            "signals":            _load_signals(),
+            # Only OPEN signals kept in memory; closed ones live on disk only
+            "signals":            [],
             "trade_count":        0,
             "win_count":          0,
             "loss_count":         0,
             "no_trade_count":     0,
             "total_pnl_pct":      0.0,
             "current_symbol":     None,
-            "symbols_scanned":    0,   # total symbols analysed today (incl NO TRADE)
+            "symbols_scanned":    0,
             # Daily tracking
             "scan_date":          "",
-            "daily_signal_count": 0,   # LONG/SHORT found today (quota counter)
-            "daily_scanned":      [],  # symbols already scanned today
+            "daily_signal_count": 0,
+            "daily_scanned":      [],
         }
         self._rebuild_counters()
-
-        # Restore today's progress from disk so restarts don't re-count
         self._restore_daily_state()
 
         self._task: Optional[asyncio.Task] = None
         self._listeners: List[Callable]    = []
-        self._active_signal = None          # kept for debug endpoint compat
+        self._active_signal = None
 
     # ------------------------------------------------------------------
     # Rebuild counters from persisted signals
     # ------------------------------------------------------------------
     def _rebuild_counters(self):
-        for s in self.state["signals"]:
-            self.state["trade_count"] += 1
+        """
+        Rebuild win/loss counters and restore open signals from disk.
+        trade_count = only closed trades (TP or SL), matching WR denominator.
+        """
+        all_signals = _load_signals()
+        for s in all_signals:
             result = s.get("result")
             if result == "TP":
-                self.state["win_count"] += 1
+                # FIX BUG 1: only count closed trades toward trade_count
+                self.state["trade_count"] += 1
+                self.state["win_count"]   += 1
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
             elif result == "SL":
-                self.state["loss_count"] += 1
+                self.state["trade_count"] += 1
+                self.state["loss_count"]  += 1
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
+            elif s.get("status") == "OPEN":
+                # Restore open signals to in-memory list
+                self.state["signals"].append(s)
+
+        self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
 
     def _restore_daily_state(self):
         ds = _load_daily_state()
@@ -193,7 +238,6 @@ class BotEngine:
         logger.info("Bot scanner loop started")
         print("Bot scanner loop started")
 
-        # Number of parallel workers = available DeepSeek tokens
         n_workers = max(len(deepseek_ai.clients), 1)
         print(f"[BotEngine] Parallel workers: {n_workers} (DeepSeek tokens loaded)")
 
@@ -244,8 +288,6 @@ class BotEngine:
                     continue
 
                 # ── Scan pool in parallel batches ─────────────────────────
-                # Each batch has at most n_workers symbols.
-                # Token[i] handles symbol batch[i] — all run simultaneously.
                 i = 0
                 while i < len(pool):
                     if not self.running:
@@ -255,11 +297,6 @@ class BotEngine:
 
                     batch = pool[i:i + n_workers]
                     i += n_workers
-
-                    # Trim batch if quota almost reached (avoid over-collecting)
-                    remaining = MAX_DAILY_SIGNALS - self.state["daily_signal_count"]
-                    # We still scan the full batch — extra signals are fine
-                    # (they just fill the quota faster)
 
                     print(f"\n[Batch] Analysing {len(batch)} coins in parallel: "
                           f"{', '.join(batch)}")
@@ -272,8 +309,8 @@ class BotEngine:
                     ]
                     market_results = await asyncio.gather(*market_tasks, return_exceptions=True)
 
-                    # Step 2: Build AI analysis items (skip symbols with bad data)
-                    ai_items   = []   # (symbol, candles_by_tf, current_price)
+                    # Step 2: Build AI analysis items
+                    ai_items   = []
                     skip_syms  = []
 
                     for sym, mresult in zip(batch, market_results):
@@ -288,7 +325,6 @@ class BotEngine:
                             continue
                         ai_items.append((sym, candles_by_tf, current_price))
 
-                    # Mark skipped symbols as scanned
                     for sym in skip_syms:
                         self._mark_scanned(sym, today)
 
@@ -296,8 +332,7 @@ class BotEngine:
                         await asyncio.sleep(INTER_SYMBOL_DELAY)
                         continue
 
-                    # Step 3: Run AI analysis in parallel — one client per coin
-                    # Trim to available clients if batch > n_workers
+                    # Step 3: Run AI analysis in parallel
                     ai_items = ai_items[:n_workers]
 
                     print(f"  Sending {len(ai_items)} AI requests in parallel…")
@@ -324,8 +359,6 @@ class BotEngine:
 
                     await asyncio.sleep(INTER_SYMBOL_DELAY)
 
-                # ── If quota not yet reached, outer loop rebuilds pool ────
-
             except asyncio.CancelledError:
                 print("Scanner loop cancelled")
                 break
@@ -343,9 +376,6 @@ class BotEngine:
     # Fetch candles + ticker for a single symbol (used in parallel)
     # ------------------------------------------------------------------
     async def _fetch_market_data(self, symbol: str):
-        """
-        Returns (candles_by_tf, current_price) or raises on error.
-        """
         candles_by_tf: Dict[str, list] = {}
         for tf in TIMEFRAMES:
             try:
@@ -410,7 +440,7 @@ class BotEngine:
             "entry":         signal.get("entry"),
             "tp":            signal.get("tp"),
             "sl":            signal.get("sl"),
-            "invalidation":  signal.get("invalidation"),   # level harga → signal auto-hapus
+            "invalidation":  signal.get("invalidation"),
             "reason":        signal.get("reason"),
             "confidence":    signal.get("confidence"),
             "status":        "OPEN",
@@ -418,6 +448,8 @@ class BotEngine:
             "pnl_pct":       None,
             "closed_at":     None,
             "closed_price":  None,
+            # FIX BUG 2: track whether price has reached entry yet
+            "entry_hit":     False,
         }
 
         self.state["signals"].insert(0, signal_record)
@@ -425,7 +457,8 @@ class BotEngine:
         _save_signals(self.state["signals"])
 
         self.state["last_signal"]        = signal_record
-        self.state["trade_count"]       += 1
+        # FIX BUG 1: don't increment trade_count here anymore;
+        # trade_count only counts closed trades (TP/SL) for accurate WR
         self.state["daily_signal_count"] += 1
 
         self._emit("signal", signal_record)
@@ -434,7 +467,6 @@ class BotEngine:
               f"conf={signal.get('confidence')}% "
               f"[{self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS} today]")
 
-        # Monitor TP/SL in background
         asyncio.create_task(self._monitor_signal(sig_id))
         return True
 
@@ -471,10 +503,10 @@ class BotEngine:
 
         symbol    = signal["symbol"]
         direction = signal["decision"]
-        entry     = signal.get("entry") or signal.get("current_price")
+        entry     = float(signal.get("entry") or signal.get("current_price") or 0)
         tp        = signal.get("tp")
         sl        = signal.get("sl")
-        inv_price = signal.get("invalidation")   # level invalidasi dari AI
+        inv_price = signal.get("invalidation")
 
         if not tp or not sl:
             return
@@ -482,14 +514,26 @@ class BotEngine:
         max_duration = 60 * 60 * 8   # 8 hours
         start        = time.time()
 
+        # FIX BUG 2: gate — only start monitoring TP/SL after entry is hit
+        entry_hit = False
+
         while time.time() - start < max_duration:
             await asyncio.sleep(10)
             if not self.running:
                 break
+
+            # Re-fetch signal in case it was removed (invalidated)
+            signal = self._find_signal(sig_id)
+            if not signal:
+                break
+
             try:
                 ticker = await mexc_client.get_ticker(symbol)
                 price  = float(ticker.get("lastPr", ticker.get("last", 0)) or 0)
             except Exception:
+                continue
+
+            if price <= 0:
                 continue
 
             # ── Cek invalidasi (auto-hapus signal) ──────────────────────
@@ -499,25 +543,39 @@ class BotEngine:
                     (direction == "SHORT" and price >= inv_price)
                 )
                 if inv_hit:
-                    # Hapus signal dari list & disk
                     self.state["signals"] = [
                         s for s in self.state["signals"] if s["id"] != sig_id
                     ]
-                    # Kembalikan counter agar statistik tidak bias
-                    self.state["trade_count"]        = max(0, self.state["trade_count"] - 1)
                     self.state["daily_signal_count"] = max(0, self.state["daily_signal_count"] - 1)
                     _save_signals(self.state["signals"])
                     self._emit("signal_invalidated", {
-                        "id":           sig_id,
-                        "symbol":       symbol,
-                        "price":        price,
-                        "inv_price":    inv_price,
-                        "direction":    direction,
-                        "timestamp":    int(time.time() * 1000),
+                        "id":        sig_id,
+                        "symbol":    symbol,
+                        "price":     price,
+                        "inv_price": inv_price,
+                        "direction": direction,
+                        "timestamp": int(time.time() * 1000),
                     })
                     print(f"  ❌ Signal {sig_id} ({symbol} {direction}) "
-                          f"INVALIDATED @ {price} | inv_level={inv_price} — dihapus otomatis")
+                          f"INVALIDATED @ {price} | inv_level={inv_price}")
                     break
+
+            # ── FIX BUG 2: wait for price to reach entry first ───────────
+            if not entry_hit:
+                if entry <= 0:
+                    # No valid entry price from AI — skip gate
+                    entry_hit = True
+                elif direction == "LONG"  and price >= entry:
+                    entry_hit = True
+                    signal["entry_hit"] = True
+                    print(f"  📍 {sig_id} ({symbol} LONG) entry hit @ {price}")
+                elif direction == "SHORT" and price <= entry:
+                    entry_hit = True
+                    signal["entry_hit"] = True
+                    print(f"  📍 {sig_id} ({symbol} SHORT) entry hit @ {price}")
+                else:
+                    # Price hasn't reached entry yet — keep waiting
+                    continue
 
             # ── Cek TP / SL ─────────────────────────────────────────────
             hit = None
@@ -542,6 +600,8 @@ class BotEngine:
                 signal["closed_at"]    = int(time.time() * 1000)
                 signal["closed_price"] = price
 
+                # FIX BUG 1: increment trade_count only on close
+                self.state["trade_count"] += 1
                 if hit == "TP":
                     self.state["win_count"] += 1
                 else:
@@ -549,7 +609,14 @@ class BotEngine:
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + pnl_pct, 4)
 
-                _save_signals(self.state["signals"])
+                # FIX BUG 3: persist closed signal BEFORE removing from memory
+                _save_closed_signal(signal)
+
+                # Remove from in-memory open list → no longer shows in recent signals
+                self.state["signals"] = [
+                    s for s in self.state["signals"] if s["id"] != sig_id
+                ]
+
                 self._emit("signal_closed", signal)
                 print(f"  Signal {sig_id} closed: {hit} @ {price} | PnL: {pnl_pct}%")
                 break
@@ -564,9 +631,11 @@ class BotEngine:
     # State / Stats
     # ------------------------------------------------------------------
     def get_state(self) -> dict:
-        trades  = self.state["trade_count"]
-        wins    = self.state["win_count"]
-        winrate = round(wins / trades * 100, 2) if trades > 0 else 0.0
+        wins   = self.state["win_count"]
+        losses = self.state["loss_count"]
+        closed = wins + losses
+        # FIX BUG 1: winrate = wins / (wins + losses), not wins / trade_count
+        winrate = round(wins / closed * 100, 2) if closed > 0 else 0.0
         return {
             **self.state,
             "winrate":            winrate,
