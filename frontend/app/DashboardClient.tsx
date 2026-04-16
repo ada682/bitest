@@ -32,19 +32,50 @@ const EMPTY_STATE: Partial<BotState> = {
   symbols_total:   0,
 };
 
-export default function DashboardClient() {
-  const [view,        setView]        = useState<View>("dashboard");
-  const [state,       setState]       = useState<Partial<BotState>>(EMPTY_STATE);
-  const [loading,     setLoading]     = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const flashRef                      = useRef<Set<string>>(new Set());
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
+export default function DashboardClient() {
+  const [view,          setView]          = useState<View>("dashboard");
+  const [state,         setState]         = useState<Partial<BotState>>(EMPTY_STATE);
+  const [loading,       setLoading]       = useState(true);
+  // ─── FIX: separate state for closed signals fetched from history API ───
+  const [closedSigs,    setClosedSigs]    = useState<Signal[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // ───────────────────────────────────────────────────────────────────────
+  const [sidebarOpen,   setSidebarOpen]   = useState(false);
+  const flashRef                          = useRef<Set<string>>(new Set());
+
+  // Initial load: bot state (open signals + counters)
   useEffect(() => {
     fetchBotState()
       .then((s) => setState(s))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  // ─── FIX: fetch full signal history (closed signals) from disk ────────
+  const fetchHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/history/signals?limit=500`);
+      const json = await res.json();
+      const all: Signal[] = json.data ?? [];
+      // Only keep truly closed signals (TP or SL)
+      setClosedSigs(all.filter((s) => s.status === "CLOSED" || s.result === "TP" || s.result === "SL"));
+    } catch {
+      // silently fail — table will show empty
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // Fetch history when switching to the history view
+  useEffect(() => {
+    if (view === "history") {
+      fetchHistory();
+    }
+  }, [view, fetchHistory]);
+  // ──────────────────────────────────────────────────────────────────────
 
   const handleWs = useCallback((msg: WsEvent) => {
     if (msg.event === "signal") {
@@ -65,10 +96,11 @@ export default function DashboardClient() {
 
     if (msg.event === "signal_closed") {
       const closed = msg.data as Signal;
+
+      // Update open signals list in dashboard state
       setState((prev) => {
-        const signals = (prev.signals ?? []).map((s) =>
-          s.id === closed.id ? closed : s
-        );
+        // Remove the closed signal from the open list (it no longer belongs there)
+        const signals = (prev.signals ?? []).filter((s) => s.id !== closed.id);
         const wins   = (prev.win_count  ?? 0) + (closed.result === "TP" ? 1 : 0);
         const losses = (prev.loss_count ?? 0) + (closed.result === "SL" ? 1 : 0);
         const total  = wins + losses;
@@ -81,10 +113,20 @@ export default function DashboardClient() {
           total_pnl_pct:  parseFloat(((prev.total_pnl_pct ?? 0) + (closed.pnl_pct ?? 0)).toFixed(4)),
         };
       });
+
+      // ─── FIX: also push closed signal into history list ───────────────
+      setClosedSigs((prev) => {
+        // Avoid duplicates
+        const exists = prev.some((s) => s.id === closed.id);
+        if (exists) return prev.map((s) => s.id === closed.id ? closed : s);
+        return [closed, ...prev];
+      });
+      // ──────────────────────────────────────────────────────────────────
     }
 
     if (msg.event === "reset_all") {
       setState((prev) => ({ ...prev, ...EMPTY_STATE, status: prev.status ?? "IDLE" }));
+      setClosedSigs([]);
     }
   }, []);
 
@@ -103,11 +145,11 @@ export default function DashboardClient() {
   const handleReset = useCallback(async () => {
     await resetStats();
     setState((p) => ({ ...EMPTY_STATE, status: p.status ?? "IDLE" }));
+    setClosedSigs([]);
   }, []);
 
-  const signals    = state.signals      ?? [];
-  const running    = state.status       === "RUNNING";
-  const closedSigs = signals.filter((s) => s.status === "CLOSED");
+  const signals    = state.signals ?? [];
+  const running    = state.status  === "RUNNING";
   const pnlColor   = (state.total_pnl_pct ?? 0) >= 0 ? "success" : "danger";
 
   return (
@@ -226,7 +268,7 @@ export default function DashboardClient() {
               </div>
             </div>
 
-            {/* PnL chart */}
+            {/* PnL chart — uses closed signals from history */}
             <div className="bg-card border border-border rounded-xl p-4 sm:p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold text-text">Cumulative PnL</h2>
@@ -235,7 +277,7 @@ export default function DashboardClient() {
                   {(state.total_pnl_pct ?? 0).toFixed(4)}%
                 </span>
               </div>
-              <PnlChart signals={signals} />
+              <PnlChart signals={closedSigs} />
             </div>
           </div>
         )}
@@ -248,6 +290,7 @@ export default function DashboardClient() {
                 <div>
                   <h2 className="text-sm font-semibold text-text">Signal History</h2>
                   <p className="text-[11px] text-muted mt-0.5">
+                    {/* ─── FIX: count from closedSigs, not state.signals ─── */}
                     Closed signals — {closedSigs.length} resolved
                   </p>
                 </div>
@@ -255,18 +298,30 @@ export default function DashboardClient() {
                   <span className="text-success">{state.win_count ?? 0} TP</span>
                   <span className="text-danger">{state.loss_count ?? 0} SL</span>
                   <span className="text-muted">{state.no_trade_count ?? 0} skipped</span>
+                  {/* Refresh button */}
+                  <button
+                    onClick={fetchHistory}
+                    disabled={historyLoading}
+                    className="text-muted/60 hover:text-muted transition-colors disabled:opacity-40"
+                    title="Refresh history"
+                  >
+                    <svg className={`w-3.5 h-3.5 ${historyLoading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
                 </div>
               </div>
 
               {closedSigs.length > 0 && (
                 <div className="px-4 sm:px-5 py-4 border-b border-border">
-                  <PnlChart signals={signals} />
+                  <PnlChart signals={closedSigs} />
                 </div>
               )}
 
+              {/* ─── FIX: use closedSigs instead of signals.filter(CLOSED) ─── */}
               <SignalTable
-                signals={signals.filter((s) => s.status === "CLOSED")}
-                loading={loading}
+                signals={closedSigs}
+                loading={historyLoading}
               />
             </div>
           </div>
