@@ -9,6 +9,7 @@ import SignalPanel  from "@/components/SignalPanel";
 import SignalTable  from "@/components/SignalTable";
 import PnlChart     from "@/components/PnlChart";
 import WinLossDonut from "@/components/WinLossDonut";
+import BalanceCard  from "@/components/BalanceCard";
 import ScanProgress from "@/components/ScanProgress";
 import LiveTicker   from "@/components/LiveTicker";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -19,65 +20,90 @@ import {
 type View = "dashboard" | "history";
 
 const EMPTY_STATE: Partial<BotState> = {
-  status:          "IDLE",
-  trade_count:     0,
-  win_count:       0,
-  loss_count:      0,
-  no_trade_count:  0,
-  winrate:         0,
-  total_pnl_pct:   0,
-  signals:         [],
-  current_symbol:  null,
-  symbols_scanned: 0,
-  symbols_total:   0,
+  status:           "IDLE",
+  trade_count:      0,
+  win_count:        0,
+  loss_count:       0,
+  no_trade_count:   0,
+  winrate:          0,
+  total_pnl_pct:    0,
+  total_pnl_usdt:   0,
+  signals:          [],
+  current_symbol:   null,
+  symbols_scanned:  0,
+  symbols_total:    0,
+  balance:          0,
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-export default function DashboardClient() {
-  const [view,          setView]          = useState<View>("dashboard");
-  const [state,         setState]         = useState<Partial<BotState>>(EMPTY_STATE);
-  const [loading,       setLoading]       = useState(true);
-  // ─── FIX: separate state for closed signals fetched from history API ───
-  const [closedSigs,    setClosedSigs]    = useState<Signal[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  // ───────────────────────────────────────────────────────────────────────
-  const [sidebarOpen,   setSidebarOpen]   = useState(false);
-  const flashRef                          = useRef<Set<string>>(new Set());
+interface VirtualBalance {
+  balance:         number;
+  initial_balance: number;
+  leverage:        number;
+  entry_usdt:      number;
+}
 
-  // Initial load: bot state (open signals + counters)
+export default function DashboardClient() {
+  const [view,            setView]            = useState<View>("dashboard");
+  const [state,           setState]           = useState<Partial<BotState>>(EMPTY_STATE);
+  const [loading,         setLoading]         = useState(true);
+  const [closedSigs,      setClosedSigs]      = useState<Signal[]>([]);
+  const [historyLoading,  setHistoryLoading]  = useState(false);
+  const [sidebarOpen,     setSidebarOpen]     = useState(false);
+  // Virtual exchange balance (realtime)
+  const [vBalance,        setVBalance]        = useState<VirtualBalance>({
+    balance: 0, initial_balance: 0, leverage: 10, entry_usdt: 100,
+  });
+  const flashRef = useRef<Set<string>>(new Set());
+
+  // ── Initial load: bot state + balance ──────────────────────────────
   useEffect(() => {
     fetchBotState()
-      .then((s) => setState(s))
+      .then((s) => {
+        setState(s);
+        // Seed balance from state if available
+        if (s.balance != null) {
+          setVBalance((prev) => ({ ...prev, balance: s.balance ?? 0 }));
+        }
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    // Also fetch full virtual balance info
+    fetch(`${API_BASE}/api/bot/balance`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.data) setVBalance(json.data as VirtualBalance);
+      })
+      .catch(() => {});
   }, []);
 
-  // ─── FIX: fetch full signal history (closed signals) from disk ────────
+  // ── Fetch closed signal history ─────────────────────────────────────
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/history/signals?limit=500`);
+      const res  = await fetch(`${API_BASE}/api/history/signals?limit=500`);
       const json = await res.json();
       const all: Signal[] = json.data ?? [];
-      // Only keep truly closed signals (TP or SL)
-      setClosedSigs(all.filter((s) => s.status === "CLOSED" || s.result === "TP" || s.result === "SL"));
+      setClosedSigs(
+        all.filter((s) => s.status === "CLOSED" || s.result === "TP" || s.result === "SL")
+      );
     } catch {
-      // silently fail — table will show empty
+      // silently fail
     } finally {
       setHistoryLoading(false);
     }
   }, []);
 
-  // Fetch history when switching to the history view
   useEffect(() => {
-    if (view === "history") {
-      fetchHistory();
-    }
+    if (view === "history") fetchHistory();
   }, [view, fetchHistory]);
-  // ──────────────────────────────────────────────────────────────────────
 
+  // ── WebSocket event handler ─────────────────────────────────────────
   const handleWs = useCallback((msg: WsEvent) => {
+
+    // New open signal
     if (msg.event === "signal") {
       const sig = msg.data as Signal;
       setState((prev) => {
@@ -94,39 +120,88 @@ export default function DashboardClient() {
       setTimeout(() => flashRef.current.delete(sig.id), 700);
     }
 
-    if (msg.event === "signal_closed") {
-      const closed = msg.data as Signal;
+    // Signal entry hit update (entry_hit flipped to true)
+    if (msg.event === "signal_entry_hit") {
+      const { id } = msg.data as { id: string };
+      setState((prev) => ({
+        ...prev,
+        signals: (prev.signals ?? []).map((s) =>
+          s.id === id ? { ...s, entry_hit: true } : s
+        ),
+      }));
+    }
 
-      // Update open signals list in dashboard state
+    // Signal closed (TP or SL)
+    if (msg.event === "signal_closed") {
+      const closed = msg.data as Signal & { balance?: number };
+
       setState((prev) => {
-        // Remove the closed signal from the open list (it no longer belongs there)
         const signals = (prev.signals ?? []).filter((s) => s.id !== closed.id);
-        const wins   = (prev.win_count  ?? 0) + (closed.result === "TP" ? 1 : 0);
-        const losses = (prev.loss_count ?? 0) + (closed.result === "SL" ? 1 : 0);
-        const total  = wins + losses;
+        const wins    = (prev.win_count  ?? 0) + (closed.result === "TP" ? 1 : 0);
+        const losses  = (prev.loss_count ?? 0) + (closed.result === "SL" ? 1 : 0);
+        const total   = wins + losses;
         return {
           ...prev,
           signals,
           win_count:      wins,
           loss_count:     losses,
           winrate:        total > 0 ? parseFloat((wins / total * 100).toFixed(2)) : 0,
-          total_pnl_pct:  parseFloat(((prev.total_pnl_pct ?? 0) + (closed.pnl_pct ?? 0)).toFixed(4)),
+          total_pnl_pct:  parseFloat(((prev.total_pnl_pct  ?? 0) + (closed.pnl_pct  ?? 0)).toFixed(4)),
+          total_pnl_usdt: parseFloat(((prev.total_pnl_usdt ?? 0) + (closed.pnl_usdt ?? 0)).toFixed(4)),
         };
       });
 
-      // ─── FIX: also push closed signal into history list ───────────────
+      // Update balance from the closed event payload
+      if (closed.balance != null) {
+        setVBalance((prev) => ({ ...prev, balance: closed.balance! }));
+      }
+
+      // Push to history list
       setClosedSigs((prev) => {
-        // Avoid duplicates
         const exists = prev.some((s) => s.id === closed.id);
         if (exists) return prev.map((s) => s.id === closed.id ? closed : s);
         return [closed, ...prev];
       });
-      // ──────────────────────────────────────────────────────────────────
     }
 
+    // Signal invalidated before entry
+    if (msg.event === "signal_invalidated") {
+      const { id } = msg.data as { id: string; symbol: string; price: number; timestamp: number };
+      setState((prev) => ({
+        ...prev,
+        signals: (prev.signals ?? []).filter((s) => s.id !== id),
+      }));
+    }
+
+    // Balance update from virtual exchange
+    if (msg.event === "balance_update") {
+      const info = msg.data as VirtualBalance;
+      setVBalance(info);
+      setState((prev) => ({ ...prev, balance: info.balance }));
+    }
+
+    // Bot status message (quota reached, waiting, etc.)
+    if (msg.event === "status") {
+      // Could surface a toast/notification here if desired
+    }
+
+    // Daily progress
+    if (msg.event === "progress") {
+      const { daily_signal_count, max_daily_signals, symbols_scanned } =
+        msg.data as { daily_signal_count: number; max_daily_signals: number; symbols_scanned: number };
+      setState((prev) => ({
+        ...prev,
+        symbols_scanned,
+        daily_signal_count,
+        symbols_total: max_daily_signals,
+      }));
+    }
+
+    // Full reset
     if (msg.event === "reset_all") {
       setState((prev) => ({ ...prev, ...EMPTY_STATE, status: prev.status ?? "IDLE" }));
       setClosedSigs([]);
+      setVBalance((prev) => ({ ...prev, balance: prev.initial_balance }));
     }
   }, []);
 
@@ -146,11 +221,21 @@ export default function DashboardClient() {
     await resetStats();
     setState((p) => ({ ...EMPTY_STATE, status: p.status ?? "IDLE" }));
     setClosedSigs([]);
+    // Refetch balance after reset
+    fetch(`${API_BASE}/api/bot/balance`)
+      .then((r) => r.json())
+      .then((json) => { if (json.data) setVBalance(json.data); })
+      .catch(() => {});
   }, []);
 
-  const signals    = state.signals ?? [];
-  const running    = state.status  === "RUNNING";
-  const pnlColor   = (state.total_pnl_pct ?? 0) >= 0 ? "success" : "danger";
+  const signals  = state.signals ?? [];
+  const running  = state.status  === "RUNNING";
+  const pnlColor = (state.total_pnl_pct ?? 0) >= 0 ? "success" : "danger";
+
+  // PnL % from initial balance
+  const pnlBalancePct = vBalance.initial_balance > 0
+    ? ((vBalance.balance - vBalance.initial_balance) / vBalance.initial_balance * 100)
+    : 0;
 
   return (
     <div className="flex min-h-screen bg-bg">
@@ -161,7 +246,6 @@ export default function DashboardClient() {
         onClose={() => setSidebarOpen(false)}
       />
 
-      {/* Main area — on desktop offset by sidebar width, on mobile full width */}
       <div className="flex-1 flex flex-col lg:ml-56 min-w-0">
         <Header
           status={state.status ?? "IDLE"}
@@ -188,7 +272,18 @@ export default function DashboardClient() {
               visible={running}
             />
 
-            {/* Stat cards — 2 cols on mobile, 5 on desktop */}
+            {/* ── Balance card (full width on mobile, left-aligned on desktop) ── */}
+            <BalanceCard
+              balance={vBalance.balance}
+              initialBalance={vBalance.initial_balance}
+              leverage={vBalance.leverage}
+              entryUsdt={vBalance.entry_usdt}
+              pnlUsdt={state.total_pnl_usdt ?? 0}
+              pnlPct={pnlBalancePct}
+              loading={loading}
+            />
+
+            {/* Stat cards */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
               <StatCard
                 label="Total Trades"
@@ -212,7 +307,7 @@ export default function DashboardClient() {
                 loading={loading}
               />
               <StatCard
-                label="Cum. PnL"
+                label="Cum. PnL %"
                 value={`${(state.total_pnl_pct ?? 0) >= 0 ? "+" : ""}${(state.total_pnl_pct ?? 0).toFixed(4)}%`}
                 color={pnlColor}
                 loading={loading}
@@ -226,16 +321,21 @@ export default function DashboardClient() {
               />
             </div>
 
-            {/* Main layout — stacked on mobile, 3-col on desktop */}
+            {/* Main layout */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-5">
 
               {/* Signal table */}
               <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
                 <div className="px-4 sm:px-5 py-3.5 border-b border-border flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-text">Recent Signals</h2>
-                  <span className="text-[11px] font-mono text-muted">
-                    {signals.filter((s) => s.decision !== "NO TRADE").length} actionable
-                  </span>
+                  <h2 className="text-sm font-semibold text-text">Open Signals</h2>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[11px] font-mono text-warning">
+                      {signals.filter((s) => s.entry_hit).length} in trade
+                    </span>
+                    <span className="text-[11px] font-mono text-muted">
+                      {signals.filter((s) => !s.entry_hit && s.decision !== "NO TRADE").length} watching
+                    </span>
+                  </div>
                 </div>
                 <SignalTable
                   signals={signals.slice(0, 30)}
@@ -268,14 +368,20 @@ export default function DashboardClient() {
               </div>
             </div>
 
-            {/* PnL chart — uses closed signals from history */}
+            {/* PnL chart */}
             <div className="bg-card border border-border rounded-xl p-4 sm:p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold text-text">Cumulative PnL</h2>
-                <span className={`text-xs font-mono ${pnlColor === "success" ? "text-success" : "text-danger"}`}>
-                  {(state.total_pnl_pct ?? 0) >= 0 ? "+" : ""}
-                  {(state.total_pnl_pct ?? 0).toFixed(4)}%
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs font-mono ${pnlColor === "success" ? "text-success" : "text-danger"}`}>
+                    {(state.total_pnl_pct ?? 0) >= 0 ? "+" : ""}
+                    {(state.total_pnl_pct ?? 0).toFixed(4)}%
+                  </span>
+                  <span className={`text-xs font-mono ${(state.total_pnl_usdt ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                    {(state.total_pnl_usdt ?? 0) >= 0 ? "+" : ""}
+                    {(state.total_pnl_usdt ?? 0).toFixed(2)} USDT
+                  </span>
+                </div>
               </div>
               <PnlChart signals={closedSigs} />
             </div>
@@ -290,7 +396,6 @@ export default function DashboardClient() {
                 <div>
                   <h2 className="text-sm font-semibold text-text">Signal History</h2>
                   <p className="text-[11px] text-muted mt-0.5">
-                    {/* ─── FIX: count from closedSigs, not state.signals ─── */}
                     Closed signals — {closedSigs.length} resolved
                   </p>
                 </div>
@@ -298,7 +403,6 @@ export default function DashboardClient() {
                   <span className="text-success">{state.win_count ?? 0} TP</span>
                   <span className="text-danger">{state.loss_count ?? 0} SL</span>
                   <span className="text-muted">{state.no_trade_count ?? 0} skipped</span>
-                  {/* Refresh button */}
                   <button
                     onClick={fetchHistory}
                     disabled={historyLoading}
@@ -306,7 +410,8 @@ export default function DashboardClient() {
                     title="Refresh history"
                   >
                     <svg className={`w-3.5 h-3.5 ${historyLoading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
                   </button>
                 </div>
@@ -318,7 +423,6 @@ export default function DashboardClient() {
                 </div>
               )}
 
-              {/* ─── FIX: use closedSigs instead of signals.filter(CLOSED) ─── */}
               <SignalTable
                 signals={closedSigs}
                 loading={historyLoading}
