@@ -1,7 +1,7 @@
 import clsx from "clsx";
 
 type Decision = "LONG" | "SHORT" | "NO TRADE";
-type Result   = "TP" | "SL" | null | undefined;
+type Result   = "TP" | "SL" | "INVALIDATED" | null | undefined;
 
 export function DecisionBadge({ decision }: { decision: Decision }) {
   return (
@@ -21,8 +21,9 @@ export function ResultBadge({ result }: { result: Result }) {
   return (
     <span className={clsx(
       "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold font-mono tracking-wide uppercase",
-      result === "TP" && "bg-success/10 text-success border border-success/20",
-      result === "SL" && "bg-danger/10 text-danger border border-danger/20",
+      result === "TP"          && "bg-success/10 text-success border border-success/20",
+      result === "SL"          && "bg-danger/10 text-danger border border-danger/20",
+      result === "INVALIDATED" && "bg-muted/10 text-muted border border-muted/20",
     )}>
       {result}
     </span>
