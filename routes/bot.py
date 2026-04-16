@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional
 from services.ws_manager import ws_manager
+from services.virtual_exchange import virtual_exchange
 
 router = APIRouter()
 
@@ -16,7 +17,7 @@ router = APIRouter()
 
 @router.post("/verify-pin")
 async def verify_pin(request: Request):
-    body = await request.json()
+    body    = await request.json()
     entered = str(body.get("pin", "")).strip()
     correct = str(os.getenv("BOT_PIN", "")).strip()
     if not correct:
@@ -29,10 +30,10 @@ async def verify_pin(request: Request):
 # ---------------------------------------------------------------------------
 
 class BotConfig(BaseModel):
-    symbol: str
-    tp_pct: float = 0.004          # 0.4% take profit
-    sl_pct: float = 0.002          # 0.2% stop loss
-    interval: int = 60             # seconds between scans
+    symbol:   str
+    tp_pct:   float = 0.004    # 0.4% take profit
+    sl_pct:   float = 0.002    # 0.2% stop loss
+    interval: int   = 60       # seconds between scans
 
 
 @router.post("/start")
@@ -61,58 +62,69 @@ async def get_state(request: Request):
 
 @router.get("/signals")
 async def get_signals(request: Request, limit: int = 50):
-    """
-    Return most recent OPEN signals only.
-    FIX BUG 3: closed signals are filtered out here so they no longer
-    appear in recent signals — they live in signal history (signals.json) only.
-    """
-    engine = request.app.state.bot_engine
+    """Return most recent OPEN signals only."""
+    engine      = request.app.state.bot_engine
     all_signals = engine.state.get("signals", [])
-    # In-memory list already contains only OPEN signals (closed ones are
-    # removed on close), but we filter defensively just in case.
     open_signals = [s for s in all_signals if s.get("status") != "CLOSED"]
     return {"data": open_signals[:limit], "total": len(open_signals)}
 
 
 @router.get("/stats")
 async def get_stats(request: Request):
-    """Return win/loss stats and winrate."""
-    engine = request.app.state.bot_engine
-    s = engine.state
-    wins     = s.get("win_count", 0)
-    losses   = s.get("loss_count", 0)
-    no_trade = s.get("no_trade_count", 0)
-    total_pnl = s.get("total_pnl_pct", 0.0)
-    closed   = wins + losses
-    # FIX BUG 1: winrate = wins / closed trades, not wins / all signals
-    winrate  = round(wins / closed * 100, 2) if closed > 0 else 0.0
+    """Return win/loss stats, winrate, balance, and total PnL."""
+    engine    = request.app.state.bot_engine
+    s         = engine.state
+    wins      = s.get("win_count", 0)
+    losses    = s.get("loss_count", 0)
+    no_trade  = s.get("no_trade_count", 0)
+    total_pct = s.get("total_pnl_pct", 0.0)
+    total_usd = s.get("total_pnl_usdt", 0.0)
+    closed    = wins + losses
+    winrate   = round(wins / closed * 100, 2) if closed > 0 else 0.0
+
     return {
         "data": {
-            "trade_count": closed,         # total closed trades
-            "win_count":   wins,
-            "loss_count":  losses,
+            "trade_count":    closed,
+            "win_count":      wins,
+            "loss_count":     losses,
             "no_trade_count": no_trade,
-            "winrate":     winrate,
-            "total_pnl_pct": total_pnl,
+            "winrate":        winrate,
+            "total_pnl_pct":  total_pct,
+            "total_pnl_usdt": round(total_usd, 4),
+            "balance":        virtual_exchange.balance,
+            "leverage":       virtual_exchange.leverage,
+            "entry_usdt":     virtual_exchange.entry_usdt,
         }
     }
 
 
 @router.post("/reset")
 async def reset_stats(request: Request):
-    """Reset all signal history and stats."""
+    """Reset all signal history, stats, and balance."""
     engine = request.app.state.bot_engine
     engine.reset_stats()
     await ws_manager.broadcast("reset_all", {
-        "trade_count": 0,
-        "win_count": 0,
-        "loss_count": 0,
+        "trade_count":    0,
+        "win_count":      0,
+        "loss_count":     0,
         "no_trade_count": 0,
-        "total_pnl_pct": 0.0,
-        "signals": [],
-        "timestamp": int(time.time() * 1000),
+        "total_pnl_pct":  0.0,
+        "total_pnl_usdt": 0.0,
+        "balance":        virtual_exchange.balance,
+        "signals":        [],
+        "timestamp":      int(time.time() * 1000),
     })
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Balance endpoint (shortcut)
+# ---------------------------------------------------------------------------
+
+@router.get("/balance")
+async def get_balance():
+    """Current virtual balance."""
+    return {"data": virtual_exchange.get_info()}
 
 
 # ---------------------------------------------------------------------------
@@ -140,11 +152,11 @@ async def debug_status(request: Request):
     losses = engine.state["loss_count"]
     closed = wins + losses
     return {
-        "running": engine.running,
-        "task_exists": engine._task is not None,
-        "task_done": engine._task.done() if engine._task else None,
+        "running":      engine.running,
+        "task_exists":  engine._task is not None,
+        "task_done":    engine._task.done()      if engine._task else None,
         "task_cancelled": engine._task.cancelled() if engine._task else None,
-        "active_signal": engine._active_signal,
+        "balance":      virtual_exchange.balance,
         "state_summary": {
             "status":      engine.state["status"],
             "trade_count": closed,
