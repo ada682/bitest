@@ -357,7 +357,8 @@ class BotEngine:
                     ai_items = ai_items[:n_workers]
 
                     print(f"  Sending {len(ai_items)} AI requests in parallel…")
-                    ai_batch = [(sym, tfs) for sym, tfs, _ in ai_items]
+                    # Pass realtime current_price so AI knows the live price
+                    ai_batch = [(sym, tfs, price) for sym, tfs, price in ai_items]
                     signals  = await deepseek_ai.analyze_batch(ai_batch)
 
                     # Step 4: Process each result
