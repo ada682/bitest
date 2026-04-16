@@ -20,7 +20,7 @@ class OpenOrderBody(BaseModel):
     tp_price:    Optional[str] = None
     sl_price:    Optional[str] = None
     leverage:    int              = 10
-    margin_mode: str              = "isolated"  # 'isolated' | 'crossed'
+    margin_mode: str              = "crossed"  # 'isolated' | 'crossed'
 
 
 class ClosePositionBody(BaseModel):
