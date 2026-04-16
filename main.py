@@ -9,31 +9,17 @@ load_dotenv()
 
 from routes import trading, bot, market, history
 from services.bot_engine import bot_engine as _engine
-from services.bitget_ws  import bitget_ws   as _bws
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.bot_engine = _engine
-
-    # Wire Bitget WS order updates → bot_engine signal tracker
-    _bws.add_callback(_engine.handle_bitget_order_update)
-
-    # Start Bitget private WS only if API key is configured
-    if os.getenv("BITGET_API_KEY"):
-        _bws.start()
-    else:
-        print("⚠️  BITGET_API_KEY not set — private WebSocket not started. "
-              "Set BITGET_API_KEY, BITGET_SECRET_KEY, BITGET_PASSPHRASE in .env")
-
     yield
-
-    await _bws.stop()
     await _engine.shutdown()
 
 
 app = FastAPI(
-    title="CryptoSignals API — Bitget Demo + MEXC Futures Scanner",
+    title="CryptoSignals API — MEXC Scanner + Virtual Trading",
     lifespan=lifespan,
 )
 
@@ -53,10 +39,12 @@ app.include_router(history.router, prefix="/api/history", tags=["history"])
 
 @app.get("/api/health")
 async def health():
+    from services.virtual_exchange import virtual_exchange
     return {
-        "status":        "ok",
-        "exchange_data": "MEXC (klines) + Bitget (coins / trading)",
-        "bitget_ws":     "connected" if _bws._ws else "disconnected",
+        "status":   "ok",
+        "data":     "MEXC (klines + contracts)",
+        "balance":  virtual_exchange.balance,
+        "leverage": virtual_exchange.leverage,
     }
 
 
