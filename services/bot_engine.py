@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 from services.mexc_client      import mexc_client
 from services.virtual_exchange import virtual_exchange
 from services.deepseek_ai      import deepseek_ai
+from services.mexc_price_feed  import price_feed        # ← WS price feed
 from utils.indicators          import format_ohlcv_text
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,8 @@ class BotEngine:
     async def start(self, config: dict):
         if self.running:
             return {"ok": False, "reason": "Bot already running"}
+        # Pastikan WS price feed aktif sebelum loop dimulai
+        await price_feed.start()
         self.config  = config
         self.running = True
         self.state["status"] = "RUNNING"
@@ -213,6 +216,7 @@ class BotEngine:
 
     async def shutdown(self):
         await self.stop()
+        await price_feed.stop()
         await mexc_client.close()
         await deepseek_ai.close()
 
@@ -474,12 +478,14 @@ class BotEngine:
         )
 
         # Spawn price monitor (tracks entry / TP / SL / invalidation)
+        # Subscribe per-ticker WS untuk resolusi 1s pada simbol ini
+        price_feed.watch(symbol)
         asyncio.create_task(self._monitor_signal(sig_id))
 
         return True
 
     # ------------------------------------------------------------------
-    # Price monitor — the sole mechanism to close signals
+    # Price monitor — pakai WS price feed, tanpa REST polling
     # ------------------------------------------------------------------
     async def _monitor_signal(self, sig_id: str):
         signal = self._find_signal(sig_id)
@@ -494,6 +500,7 @@ class BotEngine:
         inv_price = signal.get("invalidation")
 
         if not tp or not sl:
+            price_feed.unwatch(symbol)
             return
 
         tp_f  = float(tp)
@@ -504,34 +511,24 @@ class BotEngine:
         start        = time.time()
         entry_hit    = (entry <= 0)  # treat "no entry level" as already filled
 
-        # ── Deteksi arah pendekatan entry (kunci fix bug "instant entry hit") ──
-        # Ambil harga realtime saat monitor baru mulai sebagai referensi
+        # ── Deteksi arah pendekatan entry ──────────────────────────────
         _start_price = float(signal.get("current_price") or entry)
 
-        # LONG pullback entry  : AI kasih entry di bawah harga sekarang
-        #   → tunggu harga TURUN ke entry (price <= entry)
-        # LONG breakout entry  : AI kasih entry di atas/sama dengan harga sekarang
-        #   → tunggu harga NAIK ke entry  (price >= entry)
-        # SHORT pullback entry : AI kasih entry di atas harga sekarang
-        #   → tunggu harga NAIK ke entry  (price >= entry)
-        # SHORT breakout entry : AI kasih entry di bawah/sama dengan harga sekarang
-        #   → tunggu harga TURUN ke entry (price <= entry)
         if entry > 0:
             if direction == "LONG":
-                _pullback_entry = _start_price > entry   # harga sudah di atas entry → tunggu pullback turun
+                _pullback_entry = _start_price > entry
             else:  # SHORT
-                _pullback_entry = _start_price < entry   # harga sudah di bawah entry → tunggu pullback naik
+                _pullback_entry = _start_price < entry
         else:
             _pullback_entry = False
 
         print(
-            f"  🔍 {sig_id} monitor start | direction={direction} "
+            f"  🔍 {sig_id} monitor start (WS) | direction={direction} "
             f"entry={entry} start_price={_start_price} "
             f"pullback_mode={_pullback_entry}"
         )
 
         while time.time() - start < max_duration:
-            await asyncio.sleep(10)
             if not self.running:
                 break
 
@@ -539,16 +536,21 @@ class BotEngine:
             if not signal or signal.get("status") == "CLOSED":
                 break
 
-            try:
-                ticker = await mexc_client.get_ticker(symbol)
-                price  = float(ticker.get("lastPr", ticker.get("last", 0)) or 0)
-            except Exception:
-                continue
+            # ── Ambil harga dari WS price cache (non-blocking) ────────
+            # Tunggu update berikutnya — max 5s sebelum re-check state
+            price = await price_feed.wait_for_price(symbol, timeout=5.0)
 
-            if price <= 0:
-                continue
+            if not price or price <= 0:
+                # Fallback ke REST kalau WS belum punya harga simbol ini
+                try:
+                    ticker = await mexc_client.get_ticker(symbol)
+                    price  = float(ticker.get("lastPr", ticker.get("last", 0)) or 0)
+                except Exception:
+                    continue
+                if price <= 0:
+                    continue
 
-            # ── Invalidation check (before entry) ─────────────────────
+            # ── Invalidation check (sebelum entry) ────────────────────
             if inv_f and not entry_hit:
                 inv_hit = (
                     (direction == "LONG"  and price <= inv_f) or
@@ -576,24 +578,20 @@ class BotEngine:
                     })
                     self._emit("balance_update", virtual_exchange.get_info())
                     print(f"  ❌ Signal {sig_id} INVALIDATED @ {price}")
+                    price_feed.unwatch(symbol)
                     break
 
             # ── Entry gate ────────────────────────────────────────────
-            # Logika: tentukan kondisi "tersentuh" berdasarkan arah pendekatan
             if not entry_hit:
                 if direction == "LONG":
                     if _pullback_entry:
-                        # Pullback: tunggu harga turun menyentuh level entry dari atas
                         touched = price <= entry
                     else:
-                        # Breakout: tunggu harga naik melewati level entry dari bawah
                         touched = price >= entry
                 else:  # SHORT
                     if _pullback_entry:
-                        # Pullback: tunggu harga naik menyentuh level entry dari bawah
                         touched = price >= entry
                     else:
-                        # Breakout: tunggu harga turun melewati level entry dari atas
                         touched = price <= entry
 
                 if touched:
@@ -605,7 +603,7 @@ class BotEngine:
                     continue   # belum menyentuh entry, tunggu
                 continue       # re-check on next tick
 
-            # ── TP / SL check (after entry) ───────────────────────────
+            # ── TP / SL check (setelah entry) ─────────────────────────
             hit = None
             if direction == "LONG":
                 if price >= tp_f:   hit = "TP"
@@ -615,7 +613,6 @@ class BotEngine:
                 elif price >= sl_f: hit = "SL"
 
             if hit:
-                # Percentage PnL relative to entry
                 if entry > 0:
                     pnl_pct = round(
                         (price - entry) / entry * 100 if direction == "LONG"
@@ -624,8 +621,7 @@ class BotEngine:
                 else:
                     pnl_pct = 0.0
 
-                # USDT PnL via virtual exchange
-                close_p  = tp_f if hit == "TP" else sl_f   # snap to exact level
+                close_p  = tp_f if hit == "TP" else sl_f
                 pnl_usdt = virtual_exchange.apply_result(hit, direction, entry, close_p)
 
                 signal["status"]       = "CLOSED"
@@ -657,13 +653,15 @@ class BotEngine:
                     f"pnl={pnl_pct}% / {pnl_usdt:+.4f} USDT | "
                     f"balance={virtual_exchange.balance} USDT"
                 )
+                price_feed.unwatch(symbol)
                 break
 
-        # Timed out — leave signal open, will persist on restart
+        # Timed out — leave signal open, akan persist on restart
         if self.running:
             signal = self._find_signal(sig_id)
             if signal and signal.get("status") == "OPEN":
                 print(f"  ⏰ Signal {sig_id} timed out (8h) — staying OPEN")
+                # Jangan unwatch — signal masih OPEN, feed tetap jaga harga
 
     def _find_signal(self, sig_id: str) -> Optional[Dict]:
         for s in self.state["signals"]:
