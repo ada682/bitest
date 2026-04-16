@@ -74,7 +74,7 @@ export default function DashboardClient() {
     fetch(`${API_BASE}/api/bot/balance`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.data) setVBalance(json.data as Balance);
+        if (json.data) setVBalance(json.data as VirtualBalance);
       })
       .catch(() => {});
   }, []);
