@@ -2,10 +2,12 @@
 import { DecisionBadge, ResultBadge } from "./Badges";
 import type { Signal } from "@/lib/types";
 import clsx from "clsx";
+import PosterButton from "./SignalPoster";
 
 interface Props {
-  signals:  Signal[];
-  loading?: boolean;
+  signals:   Signal[];
+  loading?:  boolean;
+  leverage?: number;   // passed from parent (VirtualBalance.leverage)
 }
 
 function fmt(n?: number | null, d = 4) {
@@ -30,7 +32,6 @@ function PnlCell({ pnl, usdt }: { pnl: number | null | undefined; usdt?: number 
   );
 }
 
-/** Shows if the signal is waiting for entry or already in an active trade */
 function EntryStatus({ signal }: { signal: Signal }) {
   if (signal.status === "CLOSED")      return null;
   if (signal.status === "INVALIDATED") return null;
@@ -53,7 +54,7 @@ function EntryStatus({ signal }: { signal: Signal }) {
 }
 
 // Mobile card view
-function SignalCard({ s }: { s: Signal }) {
+function SignalCard({ s, leverage }: { s: Signal; leverage: number }) {
   return (
     <div className="px-4 py-3 border-b border-border/30 last:border-0">
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -105,12 +106,16 @@ function SignalCard({ s }: { s: Signal }) {
             <span className="text-muted/50">{s.confidence}% conf</span>
           ) : null}
         </div>
-        <span>
-          {new Date(s.timestamp).toLocaleString("en-US", {
-            month: "2-digit", day: "2-digit",
-            hour: "2-digit", minute: "2-digit", hour12: false,
-          })}
-        </span>
+        <div className="flex items-center gap-2">
+          {/* Poster button — only for in-trade signals on mobile */}
+          <PosterButton signal={s} leverage={leverage} />
+          <span>
+            {new Date(s.timestamp).toLocaleString("en-US", {
+              month: "2-digit", day: "2-digit",
+              hour: "2-digit", minute: "2-digit", hour12: false,
+            })}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -127,9 +132,10 @@ const COLS = [
   { key: "status",   label: "Status",   w: "w-28"  },
   { key: "result",   label: "Result",   w: "w-16"  },
   { key: "pnl",      label: "PnL",      w: "w-24"  },
+  { key: "poster",   label: "",         w: "w-20"  },  // ← new
 ];
 
-export default function SignalTable({ signals, loading }: Props) {
+export default function SignalTable({ signals, loading, leverage = 10 }: Props) {
   if (loading) {
     return (
       <div>
@@ -186,7 +192,7 @@ export default function SignalTable({ signals, loading }: Props) {
     <>
       {/* Mobile card list */}
       <div className="sm:hidden">
-        {signals.map((s) => <SignalCard key={s.id} s={s} />)}
+        {signals.map((s) => <SignalCard key={s.id} s={s} leverage={leverage} />)}
       </div>
 
       {/* Desktop table */}
@@ -237,7 +243,6 @@ export default function SignalTable({ signals, loading }: Props) {
                       {s.status}
                     </span>
                     <EntryStatus signal={s} />
-                    {/* Show close price for closed signals */}
                     {s.status === "CLOSED" && s.closed_price != null && (
                       <span className="text-[9px] font-mono text-muted/50">
                         @ ${fmt(s.closed_price, 6)}
@@ -254,6 +259,11 @@ export default function SignalTable({ signals, loading }: Props) {
                 </td>
                 <td className="py-2.5 px-3">
                   <PnlCell pnl={s.pnl_pct} usdt={s.pnl_usdt} />
+                </td>
+
+                {/* ── POSTER BUTTON — only visible for in-trade rows ── */}
+                <td className="py-2.5 px-3">
+                  <PosterButton signal={s} leverage={leverage} />
                 </td>
               </tr>
             ))}
