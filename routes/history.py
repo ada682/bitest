@@ -4,12 +4,16 @@ All history comes from the persisted signals.json via bot_engine state.
 """
 
 import json
+import os
 from pathlib import Path
 from fastapi import APIRouter, Request
 
 router = APIRouter()
 
-SIGNALS_FILE = Path("signals.json")
+# FIXED: use the same env var as bot_engine.py so both point to the same file.
+# On Railway this resolves to /app/data/signals.json (set via SIGNALS_FILE env var).
+# Locally it defaults to signals.json in the working directory.
+SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
 
 
 def _load_signals() -> list:
