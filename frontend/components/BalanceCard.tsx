@@ -29,7 +29,7 @@ export default function BalanceCard({
         <div className="flex items-center gap-4 sm:gap-6">
           <div>
             <p className="text-[10px] sm:text-[11px] font-medium tracking-widest uppercase text-muted mb-1">
-              Virtual Balance
+              MEXC Balance
             </p>
             {loading ? (
               <div className="h-8 w-32 bg-border rounded animate-pulse" />
