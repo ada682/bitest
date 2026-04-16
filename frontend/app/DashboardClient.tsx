@@ -52,7 +52,7 @@ export default function DashboardClient() {
   const [historyLoading,  setHistoryLoading]  = useState(false);
   const [sidebarOpen,     setSidebarOpen]     = useState(false);
   // Virtual exchange balance (realtime)
-  const [vBalance,        setVBalance]        = useState<Balance>({
+  const [vBalance,        setVBalance]        = useState<VirtualBalance>({
     balance: 0, initial_balance: 0, leverage: 10, entry_usdt: 100,
   });
   const flashRef = useRef<Set<string>>(new Set());
