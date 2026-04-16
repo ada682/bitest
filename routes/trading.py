@@ -1,17 +1,3 @@
-"""
-Trading routes — Bitget Demo Futures
-=====================================
-GET  /api/trading/balance          — demo account USDT balance
-GET  /api/trading/positions        — open positions (live from Bitget)
-POST /api/trading/open             — open a limit order with TP/SL
-POST /api/trading/close            — close a position (market)
-POST /api/trading/tpsl             — set / update TP or SL on existing position
-POST /api/trading/cancel           — cancel a pending order
-GET  /api/trading/orders/history   — closed order history
-GET  /api/trading/contracts        — all USDT-FUTURES contracts
-GET  /api/trading/ws/snapshot      — latest WS snapshot (positions + orders)
-"""
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
