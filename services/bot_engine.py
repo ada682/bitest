@@ -509,6 +509,32 @@ class BotEngine:
         start        = time.time()
         entry_hit    = (entry <= 0)  # treat "no entry level" as already filled
 
+        # ── Deteksi arah pendekatan entry (kunci fix bug "instant entry hit") ──
+        # Ambil harga realtime saat monitor baru mulai sebagai referensi
+        _start_price = float(signal.get("current_price") or entry)
+
+        # LONG pullback entry  : AI kasih entry di bawah harga sekarang
+        #   → tunggu harga TURUN ke entry (price <= entry)
+        # LONG breakout entry  : AI kasih entry di atas/sama dengan harga sekarang
+        #   → tunggu harga NAIK ke entry  (price >= entry)
+        # SHORT pullback entry : AI kasih entry di atas harga sekarang
+        #   → tunggu harga NAIK ke entry  (price >= entry)
+        # SHORT breakout entry : AI kasih entry di bawah/sama dengan harga sekarang
+        #   → tunggu harga TURUN ke entry (price <= entry)
+        if entry > 0:
+            if direction == "LONG":
+                _pullback_entry = _start_price > entry   # harga sudah di atas entry → tunggu pullback turun
+            else:  # SHORT
+                _pullback_entry = _start_price < entry   # harga sudah di bawah entry → tunggu pullback naik
+        else:
+            _pullback_entry = False
+
+        print(
+            f"  🔍 {sig_id} monitor start | direction={direction} "
+            f"entry={entry} start_price={_start_price} "
+            f"pullback_mode={_pullback_entry}"
+        )
+
         while time.time() - start < max_duration:
             await asyncio.sleep(10)
             if not self.running:
@@ -558,17 +584,30 @@ class BotEngine:
                     break
 
             # ── Entry gate ────────────────────────────────────────────
+            # Logika: tentukan kondisi "tersentuh" berdasarkan arah pendekatan
             if not entry_hit:
-                if direction == "LONG"  and price >= entry:
+                if direction == "LONG":
+                    if _pullback_entry:
+                        # Pullback: tunggu harga turun menyentuh level entry dari atas
+                        touched = price <= entry
+                    else:
+                        # Breakout: tunggu harga naik melewati level entry dari bawah
+                        touched = price >= entry
+                else:  # SHORT
+                    if _pullback_entry:
+                        # Pullback: tunggu harga naik menyentuh level entry dari bawah
+                        touched = price >= entry
+                    else:
+                        # Breakout: tunggu harga turun melewati level entry dari atas
+                        touched = price <= entry
+
+                if touched:
                     entry_hit = True
                     signal["entry_hit"] = True
-                    print(f"  📍 {sig_id} entry HIT (LONG) @ {price}")
-                elif direction == "SHORT" and price <= entry:
-                    entry_hit = True
-                    signal["entry_hit"] = True
-                    print(f"  📍 {sig_id} entry HIT (SHORT) @ {price}")
+                    mode_label = "pullback" if _pullback_entry else "breakout"
+                    print(f"  📍 {sig_id} entry HIT ({direction} {mode_label}) @ {price}")
                 else:
-                    continue   # wait for entry
+                    continue   # belum menyentuh entry, tunggu
                 continue       # re-check on next tick
 
             # ── TP / SL check (after entry) ───────────────────────────
@@ -672,7 +711,14 @@ class BotEngine:
             "daily_scanned":      [],
         })
         virtual_exchange.reset()
-        _save_signals([])
+        # ── Langsung tulis file kosong, JANGAN pakai _save_signals([])
+        # karena _save_signals() akan merge dengan existing data → file tidak terhapus
+        try:
+            SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SIGNALS_FILE.write_text(json.dumps([], indent=2))
+            print(f"🗑️  Signals file cleared: {SIGNALS_FILE.absolute()}")
+        except Exception as e:
+            logger.warning(f"Could not clear signals file: {e}")
         _save_daily_state({"date": "", "daily_signal_count": 0, "scanned_symbols": []})
 
 
