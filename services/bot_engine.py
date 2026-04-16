@@ -163,12 +163,13 @@ class BotEngine:
         """
         Rebuild win/loss counters and restore open signals from disk.
         trade_count = only closed trades (TP or SL), matching WR denominator.
+        INVALIDATED signals are excluded from all counters.
         """
         all_signals = _load_signals()
         for s in all_signals:
             result = s.get("result")
+            status = s.get("status")
             if result == "TP":
-                # FIX BUG 1: only count closed trades toward trade_count
                 self.state["trade_count"] += 1
                 self.state["win_count"]   += 1
                 self.state["total_pnl_pct"] = round(
@@ -178,8 +179,8 @@ class BotEngine:
                 self.state["loss_count"]  += 1
                 self.state["total_pnl_pct"] = round(
                     self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
-            elif s.get("status") == "OPEN":
-                # Restore open signals to in-memory list
+            elif status == "OPEN":
+                # Restore only genuine open signals (not invalidated ones)
                 self.state["signals"].append(s)
 
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
@@ -456,6 +457,28 @@ class BotEngine:
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
         _save_signals(self.state["signals"])
 
+        # FIX BUG 2: validate TP/SL are on the correct side of entry.
+        # If AI returns inverted values (tp < entry for LONG, or tp > entry for SHORT),
+        # reject the signal to prevent instant false-wins.
+        _entry = signal_record.get("entry") or current_price
+        _tp    = signal_record.get("tp")
+        _sl    = signal_record.get("sl")
+        if _entry and _tp and _sl:
+            try:
+                e, t, s = float(_entry), float(_tp), float(_sl)
+                invalid_long  = (decision == "LONG"  and not (t > e > s))
+                invalid_short = (decision == "SHORT" and not (t < e < s))
+                if invalid_long or invalid_short:
+                    print(f"  ⚠️  {symbol} {decision} REJECTED — invalid TP/SL direction: "
+                          f"entry={e} tp={t} sl={s}")
+                    self.state["signals"] = [
+                        x for x in self.state["signals"] if x["id"] != sig_id
+                    ]
+                    _save_signals(self.state["signals"])
+                    return False
+            except (TypeError, ValueError):
+                pass  # non-numeric values — let _monitor_signal handle
+
         self.state["last_signal"]        = signal_record
         # FIX BUG 1: don't increment trade_count here anymore;
         # trade_count only counts closed trades (TP/SL) for accurate WR
@@ -543,11 +566,18 @@ class BotEngine:
                     (direction == "SHORT" and price >= inv_price)
                 )
                 if inv_hit:
+                    # FIX BUG 1: save signal as INVALIDATED on disk BEFORE
+                    # removing from memory — prevents zombie OPEN signals in history.
+                    signal["status"]       = "INVALIDATED"
+                    signal["result"]       = "INVALIDATED"
+                    signal["closed_at"]    = int(time.time() * 1000)
+                    signal["closed_price"] = price
+                    _save_closed_signal(signal)
+
                     self.state["signals"] = [
                         s for s in self.state["signals"] if s["id"] != sig_id
                     ]
                     self.state["daily_signal_count"] = max(0, self.state["daily_signal_count"] - 1)
-                    _save_signals(self.state["signals"])
                     self._emit("signal_invalidated", {
                         "id":        sig_id,
                         "symbol":    symbol,
@@ -576,6 +606,10 @@ class BotEngine:
                 else:
                     # Price hasn't reached entry yet — keep waiting
                     continue
+                # FIX BUG 2B: skip TP/SL check in the SAME tick entry is hit.
+                # Prevents a phantom win when price barely touches entry and TP
+                # is already satisfied (usually due to inverted AI levels).
+                continue
 
             # ── Cek TP / SL ─────────────────────────────────────────────
             hit = None
