@@ -1,31 +1,30 @@
 """
 Market routes
 =============
-Coin list / tickers  →  Bitget USDT-FUTURES v2
-Candles (klines)     →  MEXC (better free data)
+Coin list / contracts  →  MEXC USDT-FUTURES
+Candles (klines)       →  MEXC
+Tickers                →  MEXC
 """
 
 from fastapi import APIRouter
-
-from services.bitget_client import bitget_client, mexc_to_bitget, bitget_to_mexc
-from services.mexc_client   import mexc_client
+from services.mexc_client import mexc_client
 
 router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Contracts / tickers  (Bitget)
+# Contracts / tickers  (MEXC)
 # ---------------------------------------------------------------------------
 
 @router.get("/contracts")
 async def get_contracts(limit: int = None):
     """
-    All active USDT-FUTURES contracts from Bitget.
-    Each item includes both 'symbol' (BTCUSDT) and 'mexcSymbol' (BTC_USDT).
+    All active USDT-FUTURES contracts from MEXC.
+    Symbol format: BTC_USDT
     """
-    data = await bitget_client.get_contracts()
+    data = await mexc_client.get_contracts()
     if not data:
-        return {"data": [], "error": "No contract data returned from Bitget"}
+        return {"data": [], "error": "No contract data returned from MEXC"}
     if limit:
         data = data[:limit]
     return {"data": data, "total": len(data)}
@@ -34,17 +33,17 @@ async def get_contracts(limit: int = None):
 @router.get("/ticker/{symbol}")
 async def get_ticker(symbol: str):
     """
-    Single ticker.
-    Accepts BTCUSDT or BTC_USDT — always queries MEXC (cheapest live price).
+    Single ticker from MEXC.
+    Accepts BTC_USDT or BTCUSDT (auto-converts to BTC_USDT).
     """
-    mexc_sym = symbol if "_" in symbol else bitget_to_mexc(symbol)
+    mexc_sym = symbol if "_" in symbol else (symbol[:-4] + "_USDT")
     data = await mexc_client.get_ticker(mexc_sym)
     return {"data": data}
 
 
 @router.get("/tickers")
 async def get_all_tickers():
-    """All tickers from MEXC (fast, no auth needed)."""
+    """All tickers from MEXC."""
     data = await mexc_client.get_all_tickers()
     return {"data": data, "total": len(data)}
 
@@ -57,8 +56,8 @@ async def get_all_tickers():
 async def get_candles(symbol: str, granularity: str = "5m", limit: int = 100):
     """
     OHLCV candles from MEXC.
-    Accepts BTCUSDT (Bitget) or BTC_USDT (MEXC) — auto-converts.
+    Accepts BTCUSDT or BTC_USDT — auto-converts.
     """
-    mexc_sym = symbol if "_" in symbol else bitget_to_mexc(symbol)
+    mexc_sym = symbol if "_" in symbol else (symbol[:-4] + "_USDT")
     data = await mexc_client.get_candles(mexc_sym, granularity, limit)
     return {"data": data, "symbol_used": mexc_sym}
