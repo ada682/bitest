@@ -340,6 +340,7 @@ export default function DashboardClient() {
                 <SignalTable
                   signals={signals.slice(0, 30)}
                   loading={loading}
+                  leverage={vBalance.leverage} 
                 />
               </div>
 
@@ -426,6 +427,7 @@ export default function DashboardClient() {
               <SignalTable
                 signals={closedSigs}
                 loading={historyLoading}
+                leverage={vBalance.leverage}  
               />
             </div>
           </div>
