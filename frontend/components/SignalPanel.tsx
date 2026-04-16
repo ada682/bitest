@@ -34,6 +34,8 @@ export default function SignalPanel({ signal }: { signal: Signal | null }) {
 
   const isLong  = signal.decision === "LONG";
   const isShort = signal.decision === "SHORT";
+  const isClosed = signal.status === "CLOSED";
+  const isInvalidated = signal.status === "INVALIDATED";
 
   return (
     <div className="flex flex-col gap-3">
@@ -64,6 +66,28 @@ export default function SignalPanel({ signal }: { signal: Signal | null }) {
         </div>
       )}
 
+      {/* Entry hit indicator */}
+      {signal.status === "OPEN" && (
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-mono ${
+          signal.entry_hit
+            ? "bg-accent/5 border-accent/20 text-accent"
+            : "bg-warning/5 border-warning/20 text-warning/80"
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${
+            signal.entry_hit ? "bg-accent animate-pulse" : "bg-warning/60"
+          }`} />
+          {signal.entry_hit ? "Entry hit — trade active" : "Waiting for entry…"}
+        </div>
+      )}
+
+      {/* Invalidated indicator */}
+      {isInvalidated && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-danger/5 border-danger/20 text-danger/80 text-xs font-mono">
+          <span className="w-1.5 h-1.5 rounded-full bg-danger/60" />
+          Signal invalidated before entry
+        </div>
+      )}
+
       {/* Fields */}
       <div className="mt-1">
         <Row label="Symbol"  value={signal.symbol} />
@@ -81,6 +105,29 @@ export default function SignalPanel({ signal }: { signal: Signal | null }) {
             ? <span className="text-danger">${fmt(signal.sl, 6)}</span>
             : "—"}
         />
+        {isClosed && signal.closed_price != null && (
+          <Row
+            label="Closed @"
+            value={<span className="text-subtle">${fmt(signal.closed_price, 6)}</span>}
+          />
+        )}
+        {isClosed && signal.pnl_pct != null && (
+          <Row
+            label="PnL"
+            value={
+              <div className="flex items-center gap-2">
+                <span className={signal.pnl_pct >= 0 ? "text-success" : "text-danger"}>
+                  {signal.pnl_pct >= 0 ? "+" : ""}{signal.pnl_pct.toFixed(4)}%
+                </span>
+                {signal.pnl_usdt != null && (
+                  <span className={`text-[10px] ${signal.pnl_usdt >= 0 ? "text-success/70" : "text-danger/70"}`}>
+                    ({signal.pnl_usdt >= 0 ? "+" : ""}{signal.pnl_usdt.toFixed(2)} USDT)
+                  </span>
+                )}
+              </div>
+            }
+          />
+        )}
         <Row label="Trend"   value={signal.trend   ?? "—"} mono={false} />
         <Row label="Pattern" value={signal.pattern ?? "—"} mono={false} />
       </div>
