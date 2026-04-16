@@ -83,7 +83,7 @@ NO TRADE RULE:
 REVERSAL RULE (ADVANCED):
 Reversal trades are allowed ONLY if ALL conditions are met:
 
-1. There is a clear void / imbalance from a higher timeframe (4H / 2H)
+1. There is a clear void (4H / 2H)
 2. The level comes from past price action (look-back structure)
 3. Strong wick rejection exists at that level
 4. The level has NOT been revisited
@@ -296,7 +296,8 @@ class DeepSeekAI:
             self._chat_session_id = chat_session.get("id")
             logger.info(f"{self._tag()} Session created: {self._chat_session_id}")
 
-    async def analyze(self, symbol: str, candles_by_tf: dict) -> dict:
+    async def analyze(self, symbol: str, candles_by_tf: dict,
+                      current_price: float = None) -> dict:
         tag = self._tag()
         logger.info(f"{tag} Starting analysis for {symbol}")
 
@@ -308,7 +309,7 @@ class DeepSeekAI:
 
         # Build OHLCV prompt
         tf_blocks  = []
-        last_price = None
+        last_candle_price = None
         for tf in ["3m", "5m", "15m", "30m", "1h", "2h", "4h"]:
             candles = candles_by_tf.get(tf, [])
             if not candles:
@@ -319,7 +320,10 @@ class DeepSeekAI:
                 lines.append(f"{c[0]}, {c[1]}, {c[2]}, {c[3]}, {c[4]}, {c[5]}")
             tf_blocks.append("\n".join(lines))
             if candles:
-                last_price = float(candles[-1][4])
+                last_candle_price = float(candles[-1][4])
+
+        # Prefer realtime ticker price; fall back to last candle close
+        live_price = current_price if (current_price and current_price > 0) else last_candle_price
 
         ohlcv_section = "\n\n".join(tf_blocks) if tf_blocks else "No candle data available."
 
@@ -334,7 +338,15 @@ analyst {symbol}
 ---
 
 Now analyze the data above using the SAME void/wick imbalance pattern from the training examples.
-Current live price (latest close): {last_price}
+
+⚠️ CURRENT REALTIME PRICE: {live_price}
+(This is the live ticker price fetched RIGHT NOW — use this as the reference for entry placement)
+
+ENTRY DIRECTION RULE (CRITICAL — violations will cause instant loss):
+- If decision is LONG  → entry MUST be BELOW {live_price} (price needs to pull back to your level)
+- If decision is SHORT → entry MUST be ABOVE {live_price} (price needs to rally up to your level)
+- If no valid void exists on the correct side of current price → return NO TRADE
+- NEVER place a LONG entry above current price or a SHORT entry below current price
 
 You MUST respond in this EXACT JSON format ONLY — no extra text:
 {{
@@ -572,7 +584,8 @@ class ParallelDeepSeekAI:
 
         Parameters
         ----------
-        items : list of (symbol: str, candles_by_tf: dict)
+        items : list of (symbol: str, candles_by_tf: dict) or
+                         (symbol: str, candles_by_tf: dict, current_price: float)
                 Length must be <= len(self.clients).
 
         Returns
@@ -582,10 +595,12 @@ class ParallelDeepSeekAI:
         if not self.clients:
             return [self._no_trade_response("No tokens configured")] * len(items)
 
-        tasks = [
-            asyncio.create_task(self.clients[i].analyze(sym, tfs))
-            for i, (sym, tfs) in enumerate(items)
-        ]
+        tasks = []
+        for i, item in enumerate(items):
+            sym   = item[0]
+            tfs   = item[1]
+            price = item[2] if len(item) > 2 else None
+            tasks.append(asyncio.create_task(self.clients[i].analyze(sym, tfs, price)))
 
         results = []
         for t in asyncio.as_completed(tasks):
