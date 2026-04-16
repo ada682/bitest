@@ -61,10 +61,24 @@ STRICT TREND RULE:
 - Do NOT counter-trade by default
 
 ----------------------------------------
-WICK DIRECTION RULE:
-- UP trend → focus on UPPER WICK voids
-- DOWN trend → focus on LOWER WICK voids
-- Ignore voids that go against the trend
+WICK + VOID DIRECTION RULE (CRITICAL):
+
+- UP trend:
+  → use LOWER WICK voids (void below price)
+  → ignore upper wick voids
+
+- DOWN trend:
+  → use UPPER WICK voids (void above price)
+  → ignore lower wick voids
+
+IMPORTANT:
+- The void must be in the direction of a RETRACEMENT, not continuation
+
+Logic:
+- LONG = buy lower → void must be BELOW
+- SHORT = sell higher → void must be ABOVE
+
+- NEVER choose a void that would require chasing price
 
 ----------------------------------------
 ENTRY DISTANCE RULE:
@@ -120,7 +134,6 @@ IMPORTANT:
 - Do NOT guess
 - ONLY act if pattern matches training data behavior
 - Think like a patient trader waiting for price to reach a level
-
 ----------------------------------------
 TRAINING DATA:
 
@@ -342,13 +355,28 @@ Now analyze the data above using the SAME void/wick imbalance pattern from the t
 ⚠️ CURRENT REALTIME PRICE: {live_price}
 (This is the live ticker price fetched RIGHT NOW — use this as the reference for entry placement)
 
-ENTRY DIRECTION RULE (CRITICAL — violations will cause instant loss):
-- If decision is LONG  → entry MUST be BELOW {live_price} (price needs to pull back to your level)
-- If decision is SHORT → entry MUST be ABOVE {live_price} (price needs to rally up to your level)
-- If no valid void exists on the correct side of current price → return NO TRADE
-- NEVER place a LONG entry above current price or a SHORT entry below current price
+----------------------------------------
+VOID POSITION RULE (CRITICAL):
 
+- LONG → ONLY use void BELOW current price
+- SHORT → ONLY use void ABOVE current price
+
+- If void is on the wrong side → IGNORE IT
+- If no valid void on correct side → NO TRADE
+
+----------------------------------------
+ENTRY DIRECTION RULE (CRITICAL — violations will cause instant loss):
+
+- If decision is LONG  → entry MUST be BELOW {live_price}
+- If decision is SHORT → entry MUST be ABOVE {live_price}
+
+- NEVER:
+  ❌ LONG above price
+  ❌ SHORT below price
+
+----------------------------------------
 You MUST respond in this EXACT JSON format ONLY — no extra text:
+
 {{
   "trend": "UP" or "DOWN" or "SIDEWAYS",
   "pattern": "brief description of what pattern you detected",
@@ -356,7 +384,7 @@ You MUST respond in this EXACT JSON format ONLY — no extra text:
   "entry": <entry price as float, or null if NO TRADE>,
   "tp": <take profit price as float, or null if NO TRADE>,
   "sl": <stop loss price as float, or null if NO TRADE>,
-  "invalidation": <price level where the setup is COMPLETELY INVALID and signal must be deleted — for LONG: a key support level BELOW sl where structure breaks; for SHORT: a key resistance level ABOVE sl where structure breaks; null if NO TRADE>,
+  "invalidation": <price level where the setup is COMPLETELY INVALID>,
   "reason": "short explanation referencing the void/wick imbalance",
   "confidence": <integer 0-100>
 }}
