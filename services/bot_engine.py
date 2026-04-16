@@ -52,10 +52,15 @@ DAILY_STATE_FILE = Path(os.getenv("DAILY_STATE_FILE", "daily_state.json"))
 
 def _load_signals() -> list:
     try:
+        SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
         if SIGNALS_FILE.exists():
-            return json.loads(SIGNALS_FILE.read_text())[:MAX_SIGNALS]
+            data = json.loads(SIGNALS_FILE.read_text())
+            print(f"📂 Loaded {len(data)} signals from {SIGNALS_FILE.absolute()}")
+            return data[:MAX_SIGNALS]
     except Exception as e:
         logger.warning(f"Could not load signals file: {e}")
+        print(f"❌ Failed to load signals: {e}")
     return []
 
 
@@ -65,6 +70,9 @@ def _save_signals(open_signals: list):
     This ensures closed signals are never lost when the in-memory list is trimmed.
     """
     try:
+        # Pastikan direktori parent exists (untuk Railway volume)
+        SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
         existing = []
         if SIGNALS_FILE.exists():
             existing = json.loads(SIGNALS_FILE.read_text())
@@ -79,9 +87,12 @@ def _save_signals(open_signals: list):
         # Sort newest-first and trim
         final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
         SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
+        
+        print(f"✅ Signals saved to {SIGNALS_FILE.absolute()} | total: {len(final[:MAX_SIGNALS])}")
+        
     except Exception as e:
         logger.warning(f"Could not save signals file: {e}")
-
+        print(f"❌ Failed to save signals: {e}")
 
 def _save_closed_signal(signal: dict):
     """
@@ -89,15 +100,24 @@ def _save_closed_signal(signal: dict):
     Called right before removing the signal from the in-memory open list.
     """
     try:
+        # Pastikan direktori parent exists (untuk Railway volume)
+        SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
         existing = []
         if SIGNALS_FILE.exists():
             existing = json.loads(SIGNALS_FILE.read_text())
+        
         sig_map = {s["id"]: s for s in existing}
         sig_map[signal["id"]] = signal
+        
         final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
         SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
+        
+        print(f"✅ Closed signal saved to {SIGNALS_FILE.absolute()}: {signal['id']} | result: {signal.get('result')}")
+        
     except Exception as e:
         logger.warning(f"Could not save closed signal: {e}")
+        print(f"❌ Failed to save closed signal {signal.get('id')}: {e}")
 
 
 def _load_daily_state() -> dict:
