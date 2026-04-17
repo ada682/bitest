@@ -464,10 +464,14 @@ function drawPoster(
   }
 
   // ── Stat cards (entry / TP / SL) ─────────────────────────────────────────
+  // Safely convert to Number — AI may return strings instead of floats
+  const _entry = signal.entry != null ? Number(signal.entry) : null;
+  const _tp    = signal.tp    != null ? Number(signal.tp)    : null;
+  const _sl    = signal.sl    != null ? Number(signal.sl)    : null;
   const statDefs = [
-    { label: "ENTRY",       val: signal.entry ? `$${signal.entry.toFixed(4)}` : "—",    c: "#e2e8f0" },   // FIX: bright white
-    { label: "TAKE PROFIT", val: signal.tp    ? `$${signal.tp.toFixed(4)}`    : "—",    c: "#86efac" },   // FIX: brighter green
-    { label: "STOP LOSS",   val: signal.sl    ? `$${signal.sl.toFixed(4)}`    : "—",    c: "#fca5a5" },   // FIX: brighter red
+    { label: "ENTRY",       val: (_entry != null && _entry > 0) ? `$${_entry.toFixed(4)}` : "—", c: "#e2e8f0" },
+    { label: "TAKE PROFIT", val: (_tp    != null && _tp    > 0) ? `$${_tp.toFixed(4)}`    : "—", c: "#86efac" },
+    { label: "STOP LOSS",   val: (_sl    != null && _sl    > 0) ? `$${_sl.toFixed(4)}`    : "—", c: "#fca5a5" },
   ];
   const gap2 = 8, cW = (W - 56 - gap2 * (statDefs.length - 1)) / statDefs.length;
   statDefs.forEach((s, i) => {
@@ -606,27 +610,26 @@ function drawPoster(
 
 // ─── AUTO-CALCULATE ROE FROM SIGNAL ──────────────────────────────────────────
 function calcAutoROE(signal: Signal, leverage: number): number {
-  // If signal already has pnl_pct (closed trade), convert to ROE
   if (signal.pnl_pct != null) {
-    // pnl_pct is already the move % on entry; ROE = pnl_pct * leverage
-    return parseFloat((signal.pnl_pct * leverage).toFixed(2));
+    return parseFloat((Number(signal.pnl_pct) * leverage).toFixed(2));
   }
-  // For open signals, estimate from current price vs entry
-  const entry = signal.entry ?? signal.current_price;
-  if (!entry || !signal.current_price) return 0;
+  const entry = Number(signal.entry ?? signal.current_price);
+  const cur   = Number(signal.current_price);
+  if (!entry || !cur) return 0;
   const movePct = signal.decision === "LONG"
-    ? ((signal.current_price - entry) / entry) * 100
-    : ((entry - signal.current_price) / entry) * 100;
+    ? ((cur - entry) / entry) * 100
+    : ((entry - cur) / entry) * 100;
   return parseFloat((movePct * leverage).toFixed(2));
 }
 
 function calcAutoPnL(signal: Signal, leverage: number, entryUsdt = 100): number {
-  if (signal.pnl_usdt != null) return signal.pnl_usdt;
-  const entry = signal.entry ?? signal.current_price;
-  if (!entry || !signal.current_price) return 0;
+  if (signal.pnl_usdt != null) return Number(signal.pnl_usdt);
+  const entry = Number(signal.entry ?? signal.current_price);
+  const cur   = Number(signal.current_price);
+  if (!entry || !cur) return 0;
   const movePct = signal.decision === "LONG"
-    ? (signal.current_price - entry) / entry
-    : (entry - signal.current_price) / entry;
+    ? (cur - entry) / entry
+    : (entry - cur) / entry;
   return parseFloat((entryUsdt * leverage * movePct).toFixed(2));
 }
 
@@ -773,15 +776,15 @@ const pnlVal = calcAutoPnL(signal, leverage, entryUsdt);
             <div className="border-t border-border pt-3 flex flex-col gap-1.5 text-[11px] font-mono">
               <div className="flex justify-between text-muted">
                 <span>Entry</span>
-                <span className="text-text">{signal.entry ? `$${signal.entry.toFixed(4)}` : "—"}</span>
+                <span className="text-text">{signal.entry != null && Number(signal.entry) > 0 ? `$${Number(signal.entry).toFixed(4)}` : "—"}</span>
               </div>
               <div className="flex justify-between text-muted">
                 <span>TP</span>
-                <span className="text-success">{signal.tp ? `$${signal.tp.toFixed(4)}` : "—"}</span>
+                <span className="text-success">{signal.tp != null && Number(signal.tp) > 0 ? `$${Number(signal.tp).toFixed(4)}` : "—"}</span>
               </div>
               <div className="flex justify-between text-muted">
                 <span>SL</span>
-                <span className="text-danger">{signal.sl ? `$${signal.sl.toFixed(4)}` : "—"}</span>
+                <span className="text-danger">{signal.sl != null && Number(signal.sl) > 0 ? `$${Number(signal.sl).toFixed(4)}` : "—"}</span>
               </div>
               {signal.pnl_pct != null && (
                 <div className="flex justify-between text-muted">
