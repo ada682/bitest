@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Config (Railway env vars)
 # ---------------------------------------------------------------------------
 _GATEWAY      = os.getenv("QWEN_BASE_URL", "https://qwen-web-gateway.onrender.com")
-QWEN_MODEL    = os.getenv("QWEN_MODEL",    "qwen3.5-plus")
+QWEN_MODEL    = os.getenv("QWEN_MODEL",    "qwen3.6-plus")
 QWEN_THINKING = os.getenv("QWEN_THINKING_MODE", "Thinking")   # Auto | Thinking | Fast
 
 CHAT_URL    = f"{_GATEWAY}/v1/openai/chat/completions"
