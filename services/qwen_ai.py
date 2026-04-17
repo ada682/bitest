@@ -7,8 +7,6 @@ Features:
   • Vision — sends candlestick chart PNG per timeframe alongside OHLCV text
   • Charts generated server-side with matplotlib (non-interactive Agg backend)
   • Auto token refresh via GET /v1/refresh on 401
-  • Same public interface as ParallelDeepSeekAI — no other file needs to change
-    except bot_engine.py import line
 
 Railway env vars:
   QWEN_TOKEN_1 .. QWEN_TOKEN_5  ← bearer tokens from chat.qwen.ai (at least 1)
@@ -167,7 +165,7 @@ Your job:
 Focus on:
 - Trend structure (market direction)
 - Wick behavior (rejection / inefficiency)
-- Void / imbalance zones
+- Void 
 - Candle relationships
 - Multi-timeframe context (HTF vs LTF)
 
@@ -355,7 +353,7 @@ class QwenAIClient:
 ---
 
 Candlestick charts for all timeframes are attached as images above this text.
-Use BOTH the chart images AND the OHLCV text to identify void/wick imbalances.
+Use BOTH the chart images AND the OHLCV text to identify void.
 Cross-reference: what you see visually in the charts should match the OHLCV numbers.
 
 ⚠️ CURRENT REALTIME PRICE: {live_price}
