@@ -693,52 +693,47 @@ function drawPoster(
   }
 
   // ── Bottom bar ────────────────────────────────────────────────────────────
+  const botBarH = 80;
   const botY = arcY + chH + 24;
-  rr(ctx, 28, botY, W - 56, 100, 14);
+  rr(ctx, 28, botY, W - 56, botBarH, 14);
   ctx.fillStyle = h2r(T.a1, 0.05); ctx.fill();
   ctx.strokeStyle = h2r(T.a1, 0.12); ctx.lineWidth = 1; ctx.stroke();
 
   // Pattern behind bottom bar
-  ctx.save(); rr(ctx, 28, botY, W - 56, 100, 14); ctx.clip();
+  ctx.save(); rr(ctx, 28, botY, W - 56, botBarH, 14); ctx.clip();
   ctx.strokeStyle = h2r(T.a1, 0.04); ctx.lineWidth = 1;
   for (let ix2 = 28; ix2 < W - 28; ix2 += 18) {
-    ctx.beginPath(); ctx.moveTo(ix2, botY); ctx.lineTo(ix2, botY + 100); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ix2, botY); ctx.lineTo(ix2, botY + botBarH); ctx.stroke();
   }
   ctx.restore();
 
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 13px \"JetBrains Mono\",monospace";
-  ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText("VERIFIED SIGNAL", 44, botY + 22);
-
-  ctx.fillStyle = "#3d3d3d";
+  // Subtitle (moved up, no verified / confidence labels)
+  ctx.fillStyle = "#5a5a5a";
   ctx.font = "400 9px \"JetBrains Mono\",monospace";
-  ctx.fillText("Auto-generated via AI analysis  •  Virtual position", 44, botY + 42);
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText("Auto-generated via AI analysis  •  Virtual position", 44, botY + 20);
 
-  const confVal = signal.confidence ?? 0;
-  const confLabel = confVal >= 80 ? "HIGH CONFIDENCE" : confVal >= 60 ? "MED CONFIDENCE" : "LOW CONFIDENCE";
-  const confColor = confVal >= 80 ? "#4ade80" : confVal >= 60 ? T.a1 : "#f87171";
-  ctx.fillStyle = confColor;
-  ctx.font = "600 9px \"JetBrains Mono\",monospace";
-  ctx.fillText(`⬡ ${confLabel} ${confVal}%`, 44, botY + 60);
-
-  const urlW2 = ctx.measureText(website.replace(/^https?:\/\//, "")).width;
-  const chipPad = 14, chipH = 28, chipW = urlW2 + chipPad * 2 + 20;
-  const chipX = 30, chipY = botY + 64;
+  // URL chip — measure AFTER setting font so width is accurate
+  const chipPad = 12, chipH = 28;
+  const chipX = 30, chipY = botY + 38;
+  const urlText = "http://" + website.replace(/^https?:\/\//, "");
+  ctx.font = "500 11px \"JetBrains Mono\",monospace";
+  const urlTextW = ctx.measureText(urlText).width;
+  const globeIconW = 16; // globe icon width + gap
+  const chipW = chipPad * 2 + globeIconW + urlTextW + 4;
   rr(ctx, chipX, chipY, chipW, chipH, 7);
   ctx.fillStyle = h2r(T.a1, 0.1); ctx.fill();
   ctx.strokeStyle = h2r(T.a1, 0.4); ctx.lineWidth = 1; ctx.stroke();
-  const globeX = chipX + chipPad - 2, globeY2 = chipY + chipH / 2;
+  const globeX = chipX + chipPad + 4, globeY2 = chipY + chipH / 2;
   ctx.strokeStyle = T.a1; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(globeX, globeY2, 6, 0, Math.PI * 2); ctx.stroke();
   ctx.beginPath(); ctx.ellipse(globeX, globeY2, 3.5, 6, 0, 0, Math.PI * 2); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(globeX - 6.5, globeY2); ctx.lineTo(globeX + 6.5, globeY2); ctx.stroke();
   ctx.fillStyle = T.a1;
-  ctx.font = "500 11px \"JetBrains Mono\",monospace";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText("http://" + website.replace(/^https?:\/\//, ""), chipX + chipPad + 12, chipY + chipH / 2);
+  ctx.fillText(urlText, chipX + chipPad + globeIconW + 4, chipY + chipH / 2);
 
-  drawQR(ctx, W - 74, botY + 16, 56, T.a1);
+  drawQR(ctx, W - 74, botY + 12, 56, T.a1);
 
   const botStrip = ctx.createLinearGradient(0, 0, W, 0);
   botStrip.addColorStop(0, "transparent"); botStrip.addColorStop(0.2, T.a1);
