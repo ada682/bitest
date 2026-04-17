@@ -646,7 +646,7 @@ function PosterModal({
 
   // Auto-calculated values — no manual input needed
   const roeVal = calcAutoROE(signal, leverage);
-  const pnlVal = calcAutoPnL(signal);
+const pnlVal = calcAutoPnL(signal, leverage, entryUsdt);
 
   // Draw preview (1× DPR) whenever inputs change
   useEffect(() => {
