@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from services.mexc_client      import mexc_client
 from services.virtual_exchange import virtual_exchange
-from services.deepseek_ai      import deepseek_ai
+from services.qwen_ai          import qwen_ai
 from services.mexc_price_feed  import price_feed          # ← WS price feed
 from utils.indicators          import format_ohlcv_text
 
@@ -221,7 +221,7 @@ class BotEngine:
         await self.stop()
         await price_feed.stop()
         await mexc_client.close()
-        await deepseek_ai.close()
+        await qwen_ai.close()
 
     # ------------------------------------------------------------------
     # Keepalive loop — ping self to prevent Railway free-tier sleep
@@ -246,7 +246,7 @@ class BotEngine:
         logger.info("Bot scanner loop started")
         print("Bot scanner loop started")
 
-        n_workers = max(len(deepseek_ai.clients), 1)
+        n_workers = max(len(qwen_ai.clients), 1)
         print(f"[BotEngine] Parallel workers: {n_workers}")
 
         await asyncio.sleep(2)
@@ -319,7 +319,7 @@ class BotEngine:
 
                     ai_items = ai_items[:n_workers]
                     print(f"  Sending {len(ai_items)} AI requests in parallel…")
-                    signals  = await deepseek_ai.analyze_batch(ai_items)
+                    signals  = await qwen_ai.analyze_batch(ai_items)
 
                     for (sym, candles_by_tf, current_price), signal in zip(ai_items, signals):
                         found = self._process_signal(sym, current_price, signal)
