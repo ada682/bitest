@@ -711,7 +711,7 @@ function drawPoster(
   ctx.fillStyle = "#5a5a5a";
   ctx.font = "400 9px \"JetBrains Mono\",monospace";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText("Auto-generated via AI analysis  •  Virtual position", 44, botY + 20);
+  ctx.fillText("Auto-generated via AI analysis", 44, botY + 20);
 
   // URL chip — measure AFTER setting font so width is accurate
   const chipPad = 12, chipH = 28;
