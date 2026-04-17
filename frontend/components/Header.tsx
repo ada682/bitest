@@ -61,10 +61,10 @@ export default function Header({
         <div className="flex items-center gap-1.5 sm:gap-2">
           <button
             onClick={() => setShowPinModal("reset")}
-            className="px-2 sm:px-3 py-1.5 text-xs font-medium text-warning border border-warning/30 hover:bg-warning/10 rounded-lg transition-colors"
+            className="px-2.5 sm:px-3 py-1.5 text-xs font-medium text-warning border border-warning/30 hover:bg-warning/10 rounded-lg transition-colors"
           >
-            <span className="hidden sm:inline">Reset Stats</span>
-            <svg className="sm:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <span className="hidden xs:inline">Reset</span>
+            <svg className="xs:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
@@ -73,22 +73,16 @@ export default function Header({
           {running ? (
             <button
               onClick={() => setShowPinModal("stop")}
-              className="px-2 sm:px-3 py-1.5 text-xs font-medium text-danger border border-danger/30 hover:bg-danger/10 rounded-lg transition-colors"
+              className="px-2.5 sm:px-3 py-1.5 text-xs font-medium text-danger border border-danger/30 hover:bg-danger/10 rounded-lg transition-colors"
             >
-              <span className="hidden sm:inline">Stop Bot</span>
-              <svg className="sm:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              Stop
             </button>
           ) : (
             <button
               onClick={() => setShowPinModal("start")}
-              className="px-2 sm:px-3 py-1.5 text-xs font-medium text-bg bg-accent hover:bg-accent/90 rounded-lg transition-colors font-semibold"
+              className="px-2.5 sm:px-3 py-1.5 text-xs font-medium text-bg bg-accent hover:bg-accent/90 rounded-lg transition-colors font-semibold"
             >
-              <span className="hidden sm:inline">Start Bot</span>
-              <svg className="sm:hidden w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M5 13l4 4L19 7" />
-              </svg>
+              Start
             </button>
           )}
         </div>
