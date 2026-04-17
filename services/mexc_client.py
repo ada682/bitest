@@ -92,16 +92,18 @@ class MexcClient:
         data = resp.get("data") or {}
         if isinstance(data, list):
             data = data[0] if data else {}
-        # Normalise field names so the rest of the codebase works unchanged
+        if not data or data.get("lastPrice") is None:
+            logger.warning(f"Ticker not found for {symbol}: {resp}")
+            return {"error": "not_found", "last": "0", "lastPr": "0"}
         last = str(data.get("lastPrice", data.get("last", "0")))
         return {
             **data,
-            "last":               last,
-            "lastPr":             last,
-            "bestAsk":            str(data.get("ask1",         "0")),
-            "bestBid":            str(data.get("bid1",         "0")),
+            "last": last,
+            "lastPr": last,
+            "bestAsk": str(data.get("ask1", "0")),
+            "bestBid": str(data.get("bid1", "0")),
             "priceChangePercent": str(data.get("riseFallRate", "0")),
-            "volume24h":          str(data.get("volume24",     "0")),
+            "volume24h": str(data.get("volume24", "0")),
         }
 
     async def get_all_tickers(self) -> list:
