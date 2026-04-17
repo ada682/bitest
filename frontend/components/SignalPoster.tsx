@@ -620,17 +620,23 @@ function calcAutoROE(signal: Signal, leverage: number): number {
   return parseFloat((movePct * leverage).toFixed(2));
 }
 
-function calcAutoPnL(signal: Signal): number {
+function calcAutoPnL(signal: Signal, leverage: number, entryUsdt = 100): number {
   if (signal.pnl_usdt != null) return signal.pnl_usdt;
-  return 0;
+  const entry = signal.entry ?? signal.current_price;
+  if (!entry || !signal.current_price) return 0;
+  const movePct = signal.decision === "LONG"
+    ? (signal.current_price - entry) / entry
+    : (entry - signal.current_price) / entry;
+  return parseFloat((entryUsdt * leverage * movePct).toFixed(2));
 }
 
 // ─── POSTER MODAL ────────────────────────────────────────────────────────────
 function PosterModal({
-  signal, leverage, onClose,
+  signal, leverage, entryUsdt = 20, onClose,
 }: {
   signal: Signal;
   leverage: number;
+  entryUsdt?: number;
   onClose: () => void;
 }) {
   const canvasRef    = useRef<HTMLCanvasElement>(null);
@@ -759,7 +765,7 @@ function PosterModal({
               <p className="text-[9px] font-mono text-muted/50 mt-1 leading-relaxed">
                 {signal.pnl_pct != null
                   ? "From closed trade result"
-                  : "Estimated from current price vs entry"}
+                  : "Save this for your generation"}
               </p>
             </div>
 
@@ -832,11 +838,13 @@ function PosterModal({
 // allowForClosed=true → tampilkan untuk signal yang sudah closed (history page)
 export default function PosterButton({
   signal,
-  leverage = 10,
+  leverage = 50,
+  entryUsdt = 20,
   allowForClosed = false,
 }: {
   signal: Signal;
   leverage?: number;
+  entryUsdt?: number;
   allowForClosed?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -871,6 +879,7 @@ export default function PosterButton({
         <PosterModal
           signal={signal}
           leverage={leverage}
+          entryUsdt={entryUsdt}
           onClose={() => setOpen(false)}
         />
       )}
