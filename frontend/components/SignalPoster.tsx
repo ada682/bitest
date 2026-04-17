@@ -84,7 +84,6 @@ function makeNoise(W: number, H: number): HTMLCanvasElement {
 }
 
 // ─── SMART PRICE FORMATTER ───────────────────────────────────────────────────
-// Handles tiny numbers like 0.000002 by auto-scaling decimal places.
 function smartFmt(n: number | null | undefined, withDollar = false): string {
   if (n == null) return "—";
   const abs = Math.abs(n);
@@ -197,7 +196,6 @@ function drawCoinIcon(
 }
 
 // ─── MAIN POSTER DRAW ────────────────────────────────────────────────────────
-// DPR param: pass 2 for HD export, 1 for preview
 function drawPoster(
   canvas: HTMLCanvasElement,
   signal: Signal,
@@ -205,7 +203,7 @@ function drawPoster(
   roeVal: number,
   pnlVal: number,
   leverage: number,
-  currentPrice: number,       // ← live current price
+  currentPrice: number,
   platform = "SonneTrade",
   website = "sonnetrades.vercel.app",
   dpr = 1,
@@ -213,12 +211,9 @@ function drawPoster(
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  // Logical size
   const W = 540, H = 800;
-  // Physical size = logical × dpr (HD when dpr=2)
   canvas.width  = W * dpr;
   canvas.height = H * dpr;
-  // Scale all draw calls so we still think in 540×800
   ctx.scale(dpr, dpr);
 
   const isPos = mode === "pnl" ? pnlVal >= 0 : roeVal >= 0;
@@ -447,7 +442,6 @@ function drawPoster(
 
     statsYBase = roeY + 48;
   } else {
-    // PnL only
     let fs = 86;
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     while (ctx.measureText(pnlStr).width > W - 44 && fs > 40) {
@@ -476,34 +470,17 @@ function drawPoster(
     statsYBase = pnlY + 48;
   }
 
-  // ── Stat cards (current price / entry / TP / SL) ──────────────────────────
-  // Uses smartFmt so tiny prices like 0.000002 display correctly
+  // ── Stat cards ────────────────────────────────────────────────────────────
   const _cur   = currentPrice > 0 ? currentPrice : (signal.current_price ?? null);
   const _entry = signal.entry != null ? Number(signal.entry) : null;
   const _tp    = signal.tp    != null ? Number(signal.tp)    : null;
   const _sl    = signal.sl    != null ? Number(signal.sl)    : null;
 
   const statDefs = [
-    {
-      label: "CURRENT",
-      val: (_cur != null && _cur > 0) ? `$${smartFmt(_cur)}` : "—",
-      c: "#93c5fd",   // blue
-    },
-    {
-      label: "ENTRY",
-      val: (_entry != null && _entry > 0) ? `$${smartFmt(_entry)}` : "—",
-      c: "#e2e8f0",
-    },
-    {
-      label: "TAKE PROFIT",
-      val: (_tp != null && _tp > 0) ? `$${smartFmt(_tp)}` : "—",
-      c: "#86efac",
-    },
-    {
-      label: "STOP LOSS",
-      val: (_sl != null && _sl > 0) ? `$${smartFmt(_sl)}` : "—",
-      c: "#fca5a5",
-    },
+    { label: "CURRENT",     val: (_cur != null && _cur > 0) ? `$${smartFmt(_cur)}` : "—", c: "#93c5fd" },
+    { label: "ENTRY",       val: (_entry != null && _entry > 0) ? `$${smartFmt(_entry)}` : "—", c: "#e2e8f0" },
+    { label: "TAKE PROFIT", val: (_tp != null && _tp > 0) ? `$${smartFmt(_tp)}` : "—", c: "#86efac" },
+    { label: "STOP LOSS",   val: (_sl != null && _sl > 0) ? `$${smartFmt(_sl)}` : "—", c: "#fca5a5" },
   ];
 
   const gap2 = 7;
@@ -522,7 +499,6 @@ function drawPoster(
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(s.label, sx + cW / 2, sy + 22);
 
-    // Auto-shrink font for long value strings (e.g. 8-decimal prices)
     let vfs = 14;
     ctx.font = `700 ${vfs}px "Bebas Neue",sans-serif`;
     while (ctx.measureText(s.val).width > cW - 8 && vfs > 9) {
@@ -547,91 +523,71 @@ function drawPoster(
     ctx.beginPath(); ctx.moveTo(chX + 10, ly); ctx.lineTo(chX + chW - 10, ly); ctx.stroke();
   });
 
-  const spark = [12, 18, 15, 22, 19, 28, 24, 20, 30, 26, 34, 31, 40, 36, 44, 41, 50, 47, 55, 52, 60, 58, 68, 64, 72, 70, 80, 76, 85, 82, 90, 88, 96, 100];
-  const nPts = spark.length, padX = 14, padY = 12;
-  const plotW = chW - padX * 2, plotH = chH - padY * 2;
+  const spark = [12,18,15,22,19,28,24,20,30,26,34,31,40,36,44,41,50,47,55,52,60,58,68,64,72,70,80,76,85,82,90,88,96,100];
+  const mn = Math.min(...spark), mx = Math.max(...spark), rng = mx - mn || 1;
+  const pts = spark.map((v, i) => ({
+    x: chX + 14 + (i / (spark.length - 1)) * (chW - 28),
+    y: arcY + chH - 14 - ((v - mn) / rng) * (chH - 28),
+  }));
 
-  ctx.save();
-  rr(ctx, chX, arcY, chW, chH, 14); ctx.clip();
-
-  const areaFill = ctx.createLinearGradient(0, arcY, 0, arcY + chH);
-  areaFill.addColorStop(0, h2r(T.a1, 0.22)); areaFill.addColorStop(1, "transparent");
+  const grad2 = ctx.createLinearGradient(0, arcY, 0, arcY + chH);
+  grad2.addColorStop(0, h2r(T.a2, 0.35)); grad2.addColorStop(1, "transparent");
   ctx.beginPath();
-  spark.forEach((v, i) => {
-    const px = chX + padX + (i / (nPts - 1)) * plotW;
-    const py = arcY + padY + (1 - v / 100) * plotH;
-    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-  });
-  ctx.lineTo(chX + padX + plotW, arcY + chH - padY);
-  ctx.lineTo(chX + padX, arcY + chH - padY);
+  pts.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
+  ctx.lineTo(pts[pts.length - 1].x, arcY + chH - 8);
+  ctx.lineTo(pts[0].x, arcY + chH - 8);
   ctx.closePath();
-  ctx.fillStyle = areaFill; ctx.fill();
+  ctx.fillStyle = grad2; ctx.fill();
 
   ctx.beginPath();
-  spark.forEach((v, i) => {
-    const px = chX + padX + (i / (nPts - 1)) * plotW;
-    const py = arcY + padY + (1 - v / 100) * plotH;
-    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-  });
-  ctx.strokeStyle = T.a1; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
+  pts.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
+  ctx.strokeStyle = T.a1; ctx.lineWidth = 2; ctx.stroke();
 
-  const endX = chX + padX + plotW;
-  const endY = arcY + padY + (1 - spark[nPts - 1] / 100) * plotH;
-  ctx.beginPath(); ctx.arc(endX, endY, 5, 0, Math.PI * 2);
-  ctx.fillStyle = T.a1; ctx.fill();
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+  // ── Bottom bar ────────────────────────────────────────────────────────────
+  const botY = arcY + chH + 24;
+  rr(ctx, 28, botY, W - 56, 100, 14);
+  ctx.fillStyle = h2r(T.a1, 0.05); ctx.fill();
+  ctx.strokeStyle = h2r(T.a1, 0.12); ctx.lineWidth = 1; ctx.stroke();
+
+  // Pattern behind bottom bar
+  ctx.save(); rr(ctx, 28, botY, W - 56, 100, 14); ctx.clip();
+  ctx.strokeStyle = h2r(T.a1, 0.04); ctx.lineWidth = 1;
+  for (let ix2 = 28; ix2 < W - 28; ix2 += 18) {
+    ctx.beginPath(); ctx.moveTo(ix2, botY); ctx.lineTo(ix2, botY + 100); ctx.stroke();
+  }
   ctx.restore();
 
-  ctx.fillStyle = h2r("#ffffff", 0.18);
-  ctx.font = "400 9px \"JetBrains Mono\",monospace";
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 13px \"JetBrains Mono\",monospace";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText("PERFORMANCE", chX + 10, arcY + 14);
-  ctx.fillStyle = sc;
-  ctx.font = "bold 18px sans-serif";
-  ctx.textAlign = "right"; ctx.textBaseline = "middle";
-  ctx.fillText(isLong ? "↗" : "↘", chX + chW - 10, arcY + 16);
+  ctx.fillText("VERIFIED SIGNAL", 44, botY + 22);
 
-  // ── Divider 2 ────────────────────────────────────────────────────────────
-  const div2Y = arcY + chH + 28;
-  ctx.strokeStyle = dg; ctx.lineWidth = 1; ctx.setLineDash([4, 8]);
-  ctx.beginPath(); ctx.moveTo(28, div2Y); ctx.lineTo(W - 28, div2Y); ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.fillStyle = "#3d3d3d";
+  ctx.font = "400 9px \"JetBrains Mono\",monospace";
+  ctx.fillText("Auto-generated via AI analysis  •  Virtual position", 44, botY + 42);
 
-  // ── Bottom branding ──────────────────────────────────────────────────────
-  const botH = 100, botY = H - botH;
-  rr(ctx, 0, botY, W, botH, { tl: 0, tr: 0, bl: 20, br: 20 });
-  const botG = ctx.createLinearGradient(0, botY, 0, H);
-  botG.addColorStop(0, "transparent"); botG.addColorStop(1, h2r(T.a1, 0.08));
-  ctx.fillStyle = botG; ctx.fill();
+  const confVal = signal.confidence ?? 0;
+  const confLabel = confVal >= 80 ? "HIGH CONFIDENCE" : confVal >= 60 ? "MED CONFIDENCE" : "LOW CONFIDENCE";
+  const confColor = confVal >= 80 ? "#4ade80" : confVal >= 60 ? T.a1 : "#f87171";
+  ctx.fillStyle = confColor;
+  ctx.font = "600 9px \"JetBrains Mono\",monospace";
+  ctx.fillText(`⬡ ${confLabel} ${confVal}%`, 44, botY + 60);
 
-  ctx.strokeStyle = h2r(T.a1, 0.15); ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, botY); ctx.lineTo(W, botY); ctx.stroke();
-
-  ctx.fillStyle = T.a1;
-  ctx.font = "700 20px Outfit,sans-serif";
-  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-  ctx.fillText(platform.toUpperCase(), 30, botY + 34);
-
-  ctx.fillStyle = "#323232";
-  ctx.font = "400 10px \"JetBrains Mono\",monospace";
-  ctx.fillText("Trade smart. Trade fast. Trade with edge.", 30, botY + 54);
-
-  ctx.font = "500 11px \"JetBrains Mono\",monospace";
-  const urlW2 = ctx.measureText(websiteDisplay).width;
+  const urlW2 = ctx.measureText(website.replace(/^https?:\/\//, "")).width;
   const chipPad = 14, chipH = 28, chipW = urlW2 + chipPad * 2 + 20;
   const chipX = 30, chipY = botY + 64;
   rr(ctx, chipX, chipY, chipW, chipH, 7);
   ctx.fillStyle = h2r(T.a1, 0.1); ctx.fill();
   ctx.strokeStyle = h2r(T.a1, 0.4); ctx.lineWidth = 1; ctx.stroke();
-  const globeX = chipX + chipPad - 2, globeY = chipY + chipH / 2;
+  const globeX = chipX + chipPad - 2, globeY2 = chipY + chipH / 2;
   ctx.strokeStyle = T.a1; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(globeX, globeY, 6, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(globeX, globeY, 3.5, 6, 0, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(globeX - 6.5, globeY); ctx.lineTo(globeX + 6.5, globeY); ctx.stroke();
+  ctx.beginPath(); ctx.arc(globeX, globeY2, 6, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(globeX, globeY2, 3.5, 6, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(globeX - 6.5, globeY2); ctx.lineTo(globeX + 6.5, globeY2); ctx.stroke();
   ctx.fillStyle = T.a1;
   ctx.font = "500 11px \"JetBrains Mono\",monospace";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText(websiteDisplay, chipX + chipPad + 12, chipY + chipH / 2);
+  ctx.fillText("http://" + website.replace(/^https?:\/\//, ""), chipX + chipPad + 12, chipY + chipH / 2);
 
   drawQR(ctx, W - 74, botY + 16, 56, T.a1);
 
@@ -647,8 +603,7 @@ function drawPoster(
   ctx.restore();
 }
 
-// ─── AUTO-CALCULATE ROE FROM SIGNAL ──────────────────────────────────────────
-// livePrice overrides signal.current_price so poster updates in real-time.
+// ─── ROE / PnL calculators ───────────────────────────────────────────────────
 function calcAutoROE(signal: Signal, leverage: number, livePrice?: number): number {
   if (signal.pnl_pct != null) {
     return parseFloat((Number(signal.pnl_pct) * leverage).toFixed(2));
@@ -673,6 +628,14 @@ function calcAutoPnL(signal: Signal, leverage: number, entryUsdt = 100, livePric
   return parseFloat((entryUsdt * leverage * movePct).toFixed(2));
 }
 
+// ─── RESOLVE WS URL ──────────────────────────────────────────────────────────
+function getBotWsUrl(): string {
+  if (typeof window === "undefined") return "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host  = window.location.host;
+  return `${proto}//${host}/api/bot/ws`;
+}
+
 // ─── POSTER MODAL ────────────────────────────────────────────────────────────
 function PosterModal({
   signal, leverage, entryUsdt = 20, onClose,
@@ -682,22 +645,95 @@ function PosterModal({
   entryUsdt?: number;
   onClose: () => void;
 }) {
-  const canvasRef   = useRef<HTMLCanvasElement>(null);
-  const [mode, setMode] = useState<Mode>("roe");
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [mode, setMode]     = useState<Mode>("roe");
   const [sharing, setSharing] = useState(false);
 
-  // ── Live price polling ────────────────────────────────────────────────────
-  // Polls /api/market/ticker every 2s so ROE/PnL update in real-time
-  // while the poster is open. For closed signals we skip polling.
+  // ── Live price state ─────────────────────────────────────────────────────
   const [livePrice, setLivePrice] = useState<number>(
     Number(signal.current_price) || 0,
   );
+  // Track source for debug label in UI
+  const [priceSource, setPriceSource] = useState<"ws" | "rest" | "initial">("initial");
 
+  const isClosed = signal.status === "CLOSED" || signal.status === "INVALIDATED";
+  const sym      = signal.symbol; // e.g. "BTC_USDT"
+
+  // ── FIX: Primary — WebSocket price_tick listener ─────────────────────────
+  //
+  //  bot_engine emits `price_tick` events every ~2s for every monitored
+  //  signal. We tap into the same /api/bot/ws stream so the poster gets
+  //  the SAME real-time price the bot uses — zero extra REST overhead.
+  //
+  //  Flow: WS message → parse JSON → if event=price_tick & symbol matches
+  //        → setLivePrice(price)  → canvas redraws automatically.
   useEffect(() => {
-    // Closed signals already have final pnl — no need to poll
-    if (signal.status === "CLOSED" || signal.status === "INVALIDATED") return;
+    if (isClosed) return;
 
-    const sym = signal.symbol; // e.g. "BTC_USDT"
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let alive = true;
+
+    const connect = () => {
+      if (!alive) return;
+      const url = getBotWsUrl();
+      if (!url) return;
+
+      ws = new WebSocket(url);
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data as string);
+          // price_tick: { id, symbol, price, entry_hit, timestamp }
+          if (msg.event === "price_tick" && msg.data?.symbol === sym) {
+            const p = Number(msg.data.price);
+            if (p > 0) {
+              setLivePrice(p);
+              setPriceSource("ws");
+            }
+          }
+          // signal_closed / signal_invalidated also carry price
+          if (
+            (msg.event === "signal_closed" || msg.event === "signal_invalidated") &&
+            msg.data?.symbol === sym
+          ) {
+            const p = Number(msg.data.price ?? msg.data.closed_price);
+            if (p > 0) setLivePrice(p);
+          }
+        } catch { /* ignore malformed frames */ }
+      };
+
+      ws.onerror = () => { /* suppress console noise */ };
+
+      ws.onclose = () => {
+        // Auto-reconnect with 3s delay (handles page tab re-focus, etc.)
+        if (alive) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      alive = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [sym, isClosed]);
+
+  // ── FIX: Fallback — REST poll every 3s ───────────────────────────────────
+  //
+  //  WS gives us price_tick every ~2s, but only for signals the bot is
+  //  actively monitoring. If the poster opens for a symbol whose price_tick
+  //  hasn't arrived yet (first few seconds), we do ONE REST fetch to seed
+  //  the initial value, then let WS take over.
+  //
+  //  We also poll at 3s intervals as a safety net in case WS drops.
+  //  The backend now returns the WS-cache price (not a slow MEXC REST call)
+  //  so this is effectively instant.
+  useEffect(() => {
+    if (isClosed) return;
 
     const fetchPrice = async () => {
       try {
@@ -705,28 +741,37 @@ function PosterModal({
         const json = await res.json();
         const d    = json.data ?? {};
         const p    = parseFloat(d.lastPr ?? d.last ?? d.lastPrice ?? "0");
-        if (p > 0) setLivePrice(p);
-      } catch {
-        // silently ignore — keep last known price
-      }
+        if (p > 0) {
+          setLivePrice(prev => {
+            // Only update from REST if WS hasn't already given us a fresher value.
+            // We consider REST "fresher" only when priceSource is still "initial".
+            if (priceSource === "initial") {
+              setPriceSource("rest");
+              return p;
+            }
+            return prev;
+          });
+        }
+      } catch { /* silently ignore */ }
     };
 
-    fetchPrice();                                   // immediate first fetch
-    const timer = setInterval(fetchPrice, 2000);    // then every 2s
+    fetchPrice();                                  // immediate seed
+    const timer = setInterval(fetchPrice, 3000);   // 3s safety-net poll
     return () => clearInterval(timer);
-  }, [signal.symbol, signal.status]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sym, isClosed]);
 
-  // Auto-calculated values using live price
+  // ── Derived values ───────────────────────────────────────────────────────
   const roeVal = calcAutoROE(signal, leverage, livePrice > 0 ? livePrice : undefined);
   const pnlVal = calcAutoPnL(signal, leverage, entryUsdt, livePrice > 0 ? livePrice : undefined);
 
-  // Draw preview (1× DPR) whenever inputs change
+  // ── Canvas redraw whenever any input changes ──────────────────────────────
   useEffect(() => {
     if (!canvasRef.current) return;
     drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 1);
   }, [signal, mode, roeVal, pnlVal, leverage, livePrice]);
 
-  // Returns a HD blob (2× DPR) for saving
+  // ── HD export blob ────────────────────────────────────────────────────────
   const getHDBlob = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const hd = document.createElement("canvas");
@@ -771,8 +816,6 @@ function PosterModal({
     }
   }, [getHDBlob, signal.symbol, signal.decision]);
 
-  const isPos = mode === "pnl" ? pnlVal >= 0 : roeVal >= 0;
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
@@ -815,19 +858,20 @@ function PosterModal({
               </div>
             </div>
 
-            {/* Live-calculated values display */}
+            {/* Live values display */}
             <div className="flex flex-col gap-2 bg-bg/60 rounded-xl p-3 border border-border/50">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] font-mono uppercase tracking-widest text-muted">Live values</span>
-                {signal.status === "OPEN" && (
+                {!isClosed && (
                   <span className="flex items-center gap-1 text-[9px] font-mono text-accent/70">
                     <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                    live
+                    {/* FIX: show which source is feeding the price */}
+                    {priceSource === "ws" ? "ws" : priceSource === "rest" ? "rest" : "…"}
                   </span>
                 )}
               </div>
 
-              {/* Current price — always shown */}
+              {/* Current price */}
               <div className="flex justify-between items-center">
                 <span className="text-[11px] font-mono text-muted">Price</span>
                 <span className="text-xs font-mono font-semibold text-blue-300">
@@ -852,9 +896,9 @@ function PosterModal({
                 </div>
               )}
               <p className="text-[9px] font-mono text-muted/50 mt-1 leading-relaxed">
-                {signal.pnl_pct != null
+                {isClosed
                   ? "From closed trade result"
-                  : "Updates every 2s from MEXC"}
+                  : "Live via WebSocket · REST fallback"}
               </p>
             </div>
 
@@ -942,7 +986,6 @@ function PosterModal({
 }
 
 // ─── POSTER BUTTON ────────────────────────────────────────────────────────────
-// allowForClosed=true → tampilkan untuk signal yang sudah closed (history page)
 export default function PosterButton({
   signal,
   leverage = 50,
@@ -956,7 +999,6 @@ export default function PosterButton({
 }) {
   const [open, setOpen] = useState(false);
 
-  // Show for: in-trade (entry hit & OPEN), or explicitly allowed for closed
   const shouldShow =
     (signal.entry_hit && signal.status === "OPEN") ||
     (allowForClosed && signal.status === "CLOSED" && signal.result != null);
