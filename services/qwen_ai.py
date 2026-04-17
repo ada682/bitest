@@ -275,7 +275,7 @@ class QwenAIClient:
         self.token  = token
         self.slot   = slot
         self._tag   = f"[QW-{slot}]"
-        self.client = httpx.AsyncClient(timeout=180)
+        self.client = httpx.AsyncClient(timeout=240)
 
     # ------------------------------------------------------------------
     # Token refresh (called automatically on 401)
