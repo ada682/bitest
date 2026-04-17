@@ -1,10 +1,20 @@
 """
-Bot engine — daily signal scanner.
+Bot engine — perpetual signal scanner.
 
 Data sources:
   • Symbol pool  →  MEXC USDT-FUTURES (get_contracts)
   • Candles      →  MEXC (best free kline data)
   • AI analysis  →  DeepSeek
+
+Logic change (v2):
+  - No more daily quota. Instead we maintain a MAX_ACTIVE_SIGNALS cap on
+    CONCURRENT open signals.
+  - Whenever an open signal closes (TP / SL / INVALIDATED), the active count
+    drops below the cap and the scanner immediately picks a new coin.
+  - NO TRADE results never count toward the cap.
+  - The scanner keeps a "scanned but not yet producing signal" exclusion set
+    that resets whenever the symbol pool is exhausted (so we cycle through
+    coins forever without double-scanning within one pass).
 """
 
 import asyncio
@@ -36,11 +46,15 @@ CANDLE_LIMIT = 150
 SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
 MAX_SIGNALS  = 500
 
-MAX_DAILY_SIGNALS = int(os.getenv("MAX_DAILY_SYMBOLS", "20"))
-REQUIRED_SYMBOLS  = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]   # MEXC format
+# NEW: concurrent open-signal cap (replaces MAX_DAILY_SIGNALS)
+MAX_ACTIVE_SIGNALS = int(os.getenv("MAX_ACTIVE_SIGNALS", "20"))
 
+REQUIRED_SYMBOLS   = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]   # MEXC format
 INTER_SYMBOL_DELAY = float(os.getenv("INTER_SYMBOL_DELAY", "2.0"))
-DAILY_STATE_FILE   = Path(os.getenv("DAILY_STATE_FILE", "daily_state.json"))
+
+# Self-ping keepalive (for Railway free tier — prevents sleep)
+KEEPALIVE_URL      = os.getenv("KEEPALIVE_URL", "")          # e.g. https://your-app.up.railway.app/api/health
+KEEPALIVE_INTERVAL = int(os.getenv("KEEPALIVE_INTERVAL", "240"))  # seconds (4 min)
 
 
 # ---------------------------------------------------------------------------
@@ -91,28 +105,6 @@ def _save_closed_signal(signal: dict):
         logger.warning(f"Could not save closed signal: {e}")
 
 
-def _load_daily_state() -> dict:
-    try:
-        if DAILY_STATE_FILE.exists():
-            return json.loads(DAILY_STATE_FILE.read_text())
-    except Exception:
-        pass
-    return {"date": "", "daily_signal_count": 0, "scanned_symbols": []}
-
-
-def _save_daily_state(state: dict):
-    try:
-        DAILY_STATE_FILE.write_text(json.dumps(state, indent=2))
-    except Exception as e:
-        logger.warning(f"Could not save daily state: {e}")
-
-
-def _seconds_until_midnight() -> float:
-    now      = datetime.now()
-    midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
-    return max((midnight - now).total_seconds(), 60)
-
-
 # ---------------------------------------------------------------------------
 # BotEngine
 # ---------------------------------------------------------------------------
@@ -134,15 +126,17 @@ class BotEngine:
             "total_pnl_usdt":     0.0,
             "current_symbol":     None,
             "symbols_scanned":    0,
-            "scan_date":          "",
-            "daily_signal_count": 0,
-            "daily_scanned":      [],
+            # active signal count (replaces daily_signal_count)
+            "active_signal_count": 0,
         }
         self._rebuild_counters()
-        self._restore_daily_state()
 
-        self._task:      Optional[asyncio.Task] = None
-        self._listeners: List[Callable]         = []
+        self._task:       Optional[asyncio.Task] = None
+        self._ka_task:    Optional[asyncio.Task] = None   # keepalive
+        self._listeners:  List[Callable]         = []
+
+        # Per-pass exclusion set — reset when pool is exhausted
+        self._pass_scanned: set = set()
 
     # ------------------------------------------------------------------
     # Rebuild counters from disk
@@ -155,29 +149,22 @@ class BotEngine:
             if result == "TP":
                 self.state["trade_count"] += 1
                 self.state["win_count"]   += 1
-                self.state["total_pnl_pct"]  = round(
-                    self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
-                self.state["total_pnl_usdt"] = round(
+                self.state["total_pnl_pct"]   = round(
+                    self.state["total_pnl_pct"]  + (s.get("pnl_pct") or 0), 4)
+                self.state["total_pnl_usdt"]  = round(
                     self.state["total_pnl_usdt"] + (s.get("pnl_usdt") or 0), 4)
             elif result == "SL":
                 self.state["trade_count"] += 1
                 self.state["loss_count"]  += 1
-                self.state["total_pnl_pct"]  = round(
-                    self.state["total_pnl_pct"] + (s.get("pnl_pct") or 0), 4)
-                self.state["total_pnl_usdt"] = round(
+                self.state["total_pnl_pct"]   = round(
+                    self.state["total_pnl_pct"]  + (s.get("pnl_pct") or 0), 4)
+                self.state["total_pnl_usdt"]  = round(
                     self.state["total_pnl_usdt"] + (s.get("pnl_usdt") or 0), 4)
             elif status == "OPEN":
                 self.state["signals"].append(s)
-        self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
 
-    def _restore_daily_state(self):
-        ds    = _load_daily_state()
-        today = date.today().isoformat()
-        if ds.get("date") == today:
-            self.state["scan_date"]          = today
-            self.state["daily_signal_count"] = ds.get("daily_signal_count", 0)
-            self.state["daily_scanned"]      = ds.get("scanned_symbols", [])
-            self.state["symbols_scanned"]    = len(self.state["daily_scanned"])
+        self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
+        self.state["active_signal_count"] = len(self.state["signals"])
 
     # ------------------------------------------------------------------
     # Listeners
@@ -194,23 +181,39 @@ class BotEngine:
                 pass
 
     # ------------------------------------------------------------------
+    # Active signal count (thread-safe helper)
+    # ------------------------------------------------------------------
+    def _active_count(self) -> int:
+        return sum(1 for s in self.state["signals"] if s.get("status") == "OPEN")
+
+    # ------------------------------------------------------------------
     # Start / Stop
     # ------------------------------------------------------------------
     async def start(self, config: dict):
         if self.running:
             return {"ok": False, "reason": "Bot already running"}
-        # Pastikan WS price feed aktif sebelum loop dimulai
+
         await price_feed.start()
         self.config  = config
         self.running = True
         self.state["status"] = "RUNNING"
         self._task = asyncio.create_task(self._loop())
+
+        # Start keepalive ping if URL configured
+        if KEEPALIVE_URL:
+            self._ka_task = asyncio.create_task(self._keepalive_loop())
+            print(f"🏓 Keepalive ping started → {KEEPALIVE_URL} every {KEEPALIVE_INTERVAL}s")
+        else:
+            print("⚠️  KEEPALIVE_URL not set — Railway may sleep. Set it in env vars.")
+
         return {"ok": True}
 
     async def stop(self):
         self.running = False
         if self._task:
             self._task.cancel()
+        if self._ka_task:
+            self._ka_task.cancel()
         self.state["status"] = "IDLE"
         return {"ok": True}
 
@@ -221,7 +224,23 @@ class BotEngine:
         await deepseek_ai.close()
 
     # ------------------------------------------------------------------
-    # Main loop — daily rhythm
+    # Keepalive loop — ping self to prevent Railway free-tier sleep
+    # ------------------------------------------------------------------
+    async def _keepalive_loop(self):
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            while self.running:
+                try:
+                    await asyncio.sleep(KEEPALIVE_INTERVAL)
+                    r = await client.get(KEEPALIVE_URL)
+                    print(f"🏓 Keepalive ping → {r.status_code}")
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    print(f"🏓 Keepalive ping failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Main loop — perpetual, cap-based
     # ------------------------------------------------------------------
     async def _loop(self):
         logger.info("Bot scanner loop started")
@@ -234,58 +253,43 @@ class BotEngine:
 
         while self.running:
             try:
-                today = date.today().isoformat()
+                active = self._active_count()
 
-                if self.state["scan_date"] != today:
-                    self.state["scan_date"]          = today
-                    self.state["daily_signal_count"] = 0
-                    self.state["daily_scanned"]      = []
-                    self.state["symbols_scanned"]    = 0
-                    _save_daily_state({
-                        "date":               today,
-                        "daily_signal_count": 0,
-                        "scanned_symbols":    [],
-                    })
-                    print(f"[{today}] New day — collecting {MAX_DAILY_SIGNALS} signals")
-
-                if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
-                    secs = _seconds_until_midnight()
-                    hh   = int(secs // 3600)
-                    mm   = int((secs % 3600) // 60)
-                    msg  = (
-                        f"Daily quota reached "
-                        f"({self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS}). "
-                        f"Next run in {hh}h {mm}m."
+                # ── Already at cap → wait a bit then re-check ──────────
+                if active >= MAX_ACTIVE_SIGNALS:
+                    self.state["status"] = "MONITORING"
+                    self._emit("status",
+                        f"At cap ({active}/{MAX_ACTIVE_SIGNALS} active signals). "
+                        "Waiting for a signal to close…"
                     )
-                    print(msg)
-                    self._emit("status", msg)
-                    self.state["status"] = "WAITING_NEXT_DAY"
-                    await asyncio.sleep(secs)
-                    self.state["status"] = "RUNNING"
+                    await asyncio.sleep(10)
                     continue
 
-                pool = await self._build_pool(exclude=set(self.state["daily_scanned"]))
+                slots_needed = MAX_ACTIVE_SIGNALS - active
+                print(f"\n[Loop] Active={active}/{MAX_ACTIVE_SIGNALS} — scanning for {slots_needed} more signal(s)")
+
+                # ── Build pool excluding already-scanned this pass ──────
+                pool = await self._build_pool(exclude=self._pass_scanned)
+
                 if not pool:
-                    secs = _seconds_until_midnight()
-                    print(f"Pool exhausted. Waiting {int(secs)}s.")
-                    self._emit("status", "All symbols scanned — waiting next day.")
-                    self.state["status"] = "WAITING_NEXT_DAY"
-                    await asyncio.sleep(secs)
-                    self.state["status"] = "RUNNING"
+                    # All symbols scanned this pass — reset exclusion set
+                    print("[Loop] Pass exhausted — resetting scanned set for next pass")
+                    self._pass_scanned = set()
+                    await asyncio.sleep(5)
                     continue
 
+                self.state["status"] = "RUNNING"
                 i = 0
-                while i < len(pool):
-                    if not self.running:
-                        break
-                    if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
+                while i < len(pool) and self.running:
+                    # Re-check cap each iteration (a signal may have closed)
+                    if self._active_count() >= MAX_ACTIVE_SIGNALS:
                         break
 
                     batch = pool[i:i + n_workers]
                     i    += n_workers
 
                     print(f"\n[Batch] {', '.join(batch)}")
-                    self._emit("status", f"Batch: {', '.join(batch)}")
+                    self._emit("status", f"Scanning: {', '.join(batch)}")
 
                     market_tasks = [
                         asyncio.create_task(self._fetch_market_data(sym))
@@ -307,7 +311,7 @@ class BotEngine:
                         ai_items.append((sym, candles_by_tf, current_price))
 
                     for sym in skip_syms:
-                        self._mark_scanned(sym, today)
+                        self._pass_scanned.add(sym)
 
                     if not ai_items:
                         await asyncio.sleep(INTER_SYMBOL_DELAY)
@@ -318,16 +322,16 @@ class BotEngine:
                     signals  = await deepseek_ai.analyze_batch(ai_items)
 
                     for (sym, candles_by_tf, current_price), signal in zip(ai_items, signals):
-                        found = self._process_signal(sym, current_price, signal, today)
-                        self._mark_scanned(sym, today)
+                        found = self._process_signal(sym, current_price, signal)
+                        self._pass_scanned.add(sym)
 
                         if found:
                             self._emit("progress", {
-                                "daily_signal_count": self.state["daily_signal_count"],
-                                "max_daily_signals":  MAX_DAILY_SIGNALS,
-                                "symbols_scanned":    self.state["symbols_scanned"],
+                                "active_signal_count": self._active_count(),
+                                "max_active_signals":  MAX_ACTIVE_SIGNALS,
+                                "symbols_scanned":     self.state["symbols_scanned"],
                             })
-                            if self.state["daily_signal_count"] >= MAX_DAILY_SIGNALS:
+                            if self._active_count() >= MAX_ACTIVE_SIGNALS:
                                 break
 
                     await asyncio.sleep(INTER_SYMBOL_DELAY)
@@ -384,37 +388,24 @@ class BotEngine:
             self._emit("error", f"Contract fetch error: {e}")
             return [s for s in REQUIRED_SYMBOLS if s not in exclude]
 
-        # contracts return "symbol" in MEXC format (BTC_USDT)
         all_symbols = [c["symbol"] for c in contracts if c.get("symbol")]
-
-        mandatory = [s for s in REQUIRED_SYMBOLS
-                     if s in all_symbols and s not in exclude]
-        pool      = [s for s in all_symbols
-                     if s not in REQUIRED_SYMBOLS and s not in exclude]
+        mandatory   = [s for s in REQUIRED_SYMBOLS
+                       if s in all_symbols and s not in exclude]
+        pool        = [s for s in all_symbols
+                       if s not in REQUIRED_SYMBOLS and s not in exclude]
         random.shuffle(pool)
 
         return mandatory + pool
 
     # ------------------------------------------------------------------
-    # Mark scanned
-    # ------------------------------------------------------------------
-    def _mark_scanned(self, symbol: str, today: str):
-        if symbol not in self.state["daily_scanned"]:
-            self.state["daily_scanned"].append(symbol)
-        self.state["symbols_scanned"] += 1
-        _save_daily_state({
-            "date":               today,
-            "daily_signal_count": self.state["daily_signal_count"],
-            "scanned_symbols":    self.state["daily_scanned"],
-        })
-
-    # ------------------------------------------------------------------
     # Process one AI signal
     # ------------------------------------------------------------------
     def _process_signal(self, symbol: str, current_price: float,
-                        signal: dict, today: str) -> bool:
+                        signal: dict) -> bool:
         """symbol is MEXC format (BTC_USDT) throughout the engine."""
         self.state["current_symbol"] = symbol
+        self.state["symbols_scanned"] += 1
+
         decision = signal.get("decision", "NO TRADE")
 
         if decision == "NO TRADE":
@@ -466,26 +457,25 @@ class BotEngine:
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
         _save_signals(self.state["signals"])
 
-        self.state["last_signal"]        = signal_record
-        self.state["daily_signal_count"] += 1
+        self.state["last_signal"]         = signal_record
+        self.state["active_signal_count"] = self._active_count()
         self._emit("signal", signal_record)
 
         print(
             f"  ✅ {symbol} {decision} @ {current_price} | "
             f"TP={signal.get('tp')} SL={signal.get('sl')} | "
             f"conf={signal.get('confidence')}% "
-            f"[{self.state['daily_signal_count']}/{MAX_DAILY_SIGNALS} today]"
+            f"[active {self._active_count()}/{MAX_ACTIVE_SIGNALS}]"
         )
 
-        # Spawn price monitor (tracks entry / TP / SL / invalidation)
-        # Subscribe per-ticker WS untuk resolusi 1s pada simbol ini
+        # Spawn price monitor
         price_feed.watch(symbol)
         asyncio.create_task(self._monitor_signal(sig_id))
 
         return True
 
     # ------------------------------------------------------------------
-    # Price monitor — pakai WS price feed, tanpa REST polling
+    # Price monitor — WS price feed, no REST polling
     # ------------------------------------------------------------------
     async def _monitor_signal(self, sig_id: str):
         signal = self._find_signal(sig_id)
@@ -493,7 +483,7 @@ class BotEngine:
             return
 
         symbol    = signal["symbol"]
-        direction = signal["decision"]          # "LONG" | "SHORT"
+        direction = signal["decision"]
         entry     = float(signal.get("entry") or signal.get("current_price") or 0)
         tp        = signal.get("tp")
         sl        = signal.get("sl")
@@ -509,19 +499,16 @@ class BotEngine:
 
         max_duration = 60 * 60 * 8   # 8 hours
         start        = time.time()
-        entry_hit    = (entry <= 0)  # treat "no entry level" as already filled
-        
-        # ── Throttle constants for price_tick broadcasts ──────────────
-        PRICE_TICK_INTERVAL = 3   # seconds between price_tick WS broadcasts
-        _last_tick_emit = start  # initialize with start time
+        entry_hit    = (entry <= 0)
 
-        # ── Deteksi arah pendekatan entry ──────────────────────────────
+        PRICE_TICK_INTERVAL = 3
+        _last_tick_emit = start
+
         _start_price = float(signal.get("current_price") or entry)
-
         if entry > 0:
             if direction == "LONG":
                 _pullback_entry = _start_price > entry
-            else:  # SHORT
+            else:
                 _pullback_entry = _start_price < entry
         else:
             _pullback_entry = False
@@ -540,12 +527,9 @@ class BotEngine:
             if not signal or signal.get("status") == "CLOSED":
                 break
 
-            # ── Ambil harga dari WS price cache (non-blocking) ────────
-            # Tunggu update berikutnya — max 5s sebelum re-check state
             price = await price_feed.wait_for_price(symbol, timeout=5.0)
 
             if not price or price <= 0:
-                # Fallback ke REST kalau WS belum punya harga simbol ini
                 try:
                     ticker = await mexc_client.get_ticker(symbol)
                     price = float(ticker.get("lastPr", ticker.get("last", 0)) or 0)
@@ -554,10 +538,8 @@ class BotEngine:
                 if price <= 0:
                     continue
 
-            # ── Live current_price update (so frontend sees fresh price) ──
             signal["current_price"] = price
 
-            # ── Throttled price_tick broadcast to frontend ─────────────────
             now_t = time.time()
             if now_t - _last_tick_emit >= PRICE_TICK_INTERVAL:
                 self._emit("price_tick", {
@@ -569,7 +551,7 @@ class BotEngine:
                 })
                 _last_tick_emit = now_t
 
-            # ── Invalidation check (sebelum entry) ────────────────────
+            # ── Invalidation check (before entry) ─────────────────────
             if inv_f and not entry_hit:
                 inv_hit = (
                     (direction == "LONG"  and price <= inv_f) or
@@ -587,8 +569,7 @@ class BotEngine:
                     self.state["signals"] = [
                         s for s in self.state["signals"] if s["id"] != sig_id
                     ]
-                    self.state["daily_signal_count"] = max(
-                        0, self.state["daily_signal_count"] - 1)
+                    self.state["active_signal_count"] = self._active_count()
                     self._emit("signal_invalidated", {
                         "id":        sig_id,
                         "symbol":    symbol,
@@ -596,22 +577,17 @@ class BotEngine:
                         "timestamp": int(time.time() * 1000),
                     })
                     self._emit("balance_update", virtual_exchange.get_info())
-                    print(f"  ❌ Signal {sig_id} INVALIDATED @ {price}")
+                    print(f"  ❌ Signal {sig_id} INVALIDATED @ {price} "
+                          f"[active now {self._active_count()}/{MAX_ACTIVE_SIGNALS}]")
                     price_feed.unwatch(symbol)
                     break
 
             # ── Entry gate ────────────────────────────────────────────
             if not entry_hit:
                 if direction == "LONG":
-                    if _pullback_entry:
-                        touched = price <= entry
-                    else:
-                        touched = price >= entry
-                else:  # SHORT
-                    if _pullback_entry:
-                        touched = price >= entry
-                    else:
-                        touched = price <= entry
+                    touched = price <= entry if _pullback_entry else price >= entry
+                else:
+                    touched = price >= entry if _pullback_entry else price <= entry
 
                 if touched:
                     entry_hit = True
@@ -619,10 +595,10 @@ class BotEngine:
                     mode_label = "pullback" if _pullback_entry else "breakout"
                     print(f"  📍 {sig_id} entry HIT ({direction} {mode_label}) @ {price}")
                 else:
-                    continue   # belum menyentuh entry, tunggu
-                continue       # re-check on next tick
+                    continue
+                continue
 
-            # ── TP / SL check (setelah entry) ─────────────────────────
+            # ── TP / SL check (after entry) ───────────────────────────
             hit = None
             if direction == "LONG":
                 if price >= tp_f:   hit = "TP"
@@ -664,23 +640,25 @@ class BotEngine:
                 self.state["signals"] = [
                     s for s in self.state["signals"] if s["id"] != sig_id
                 ]
+                self.state["active_signal_count"] = self._active_count()
 
                 self._emit("signal_closed", {**signal, "balance": virtual_exchange.balance})
                 self._emit("balance_update", virtual_exchange.get_info())
                 print(
                     f"  Signal {sig_id} {hit} @ {close_p} | "
                     f"pnl={pnl_pct}% / {pnl_usdt:+.4f} USDT | "
-                    f"balance={virtual_exchange.balance} USDT"
+                    f"balance={virtual_exchange.balance} USDT | "
+                    f"active now {self._active_count()}/{MAX_ACTIVE_SIGNALS}"
                 )
                 price_feed.unwatch(symbol)
                 break
 
-        # Timed out — leave signal open, akan persist on restart
+        # Timed out — leave signal open, persists on restart
         if self.running:
             signal = self._find_signal(sig_id)
             if signal and signal.get("status") == "OPEN":
                 print(f"  ⏰ Signal {sig_id} timed out (8h) — staying OPEN")
-                # Jangan unwatch — signal masih OPEN, feed tetap jaga harga
+                # Don't unwatch — signal still OPEN, feed keeps price alive
 
     def _find_signal(self, sig_id: str) -> Optional[Dict]:
         for s in self.state["signals"]:
@@ -696,42 +674,37 @@ class BotEngine:
         losses  = self.state["loss_count"]
         closed  = wins + losses
         winrate = round(wins / closed * 100, 2) if closed > 0 else 0.0
+        active  = self._active_count()
         return {
             **self.state,
-            "winrate":            winrate,
-            "scan_date":          self.state["scan_date"],
-            "daily_signal_count": self.state["daily_signal_count"],
-            "max_daily_signals":  MAX_DAILY_SIGNALS,
-            "next_reset_in":      int(_seconds_until_midnight()),
-            "balance":            virtual_exchange.balance,
+            "winrate":             winrate,
+            "active_signal_count": active,
+            "max_active_signals":  MAX_ACTIVE_SIGNALS,
+            "balance":             virtual_exchange.balance,
         }
 
     def reset_stats(self):
         self.state.update({
-            "signals":            [],
-            "trade_count":        0,
-            "win_count":          0,
-            "loss_count":         0,
-            "no_trade_count":     0,
-            "total_pnl_pct":      0.0,
-            "total_pnl_usdt":     0.0,
-            "last_signal":        None,
-            "last_error":         None,
-            "symbols_scanned":    0,
-            "daily_signal_count": 0,
-            "scan_date":          "",
-            "daily_scanned":      [],
+            "signals":             [],
+            "trade_count":         0,
+            "win_count":           0,
+            "loss_count":          0,
+            "no_trade_count":      0,
+            "total_pnl_pct":       0.0,
+            "total_pnl_usdt":      0.0,
+            "last_signal":         None,
+            "last_error":          None,
+            "symbols_scanned":     0,
+            "active_signal_count": 0,
         })
+        self._pass_scanned = set()
         virtual_exchange.reset()
-        # ── Langsung tulis file kosong, JANGAN pakai _save_signals([])
-        # karena _save_signals() akan merge dengan existing data → file tidak terhapus
         try:
             SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
             SIGNALS_FILE.write_text(json.dumps([], indent=2))
             print(f"🗑️  Signals file cleared: {SIGNALS_FILE.absolute()}")
         except Exception as e:
             logger.warning(f"Could not clear signals file: {e}")
-        _save_daily_state({"date": "", "daily_signal_count": 0, "scanned_symbols": []})
 
 
 bot_engine = BotEngine()
