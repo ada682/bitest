@@ -2,6 +2,7 @@ import asyncio
 import os
 import time
 
+
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional
@@ -84,16 +85,18 @@ async def get_stats(request: Request):
 
     return {
         "data": {
-            "trade_count":    closed,
-            "win_count":      wins,
-            "loss_count":     losses,
-            "no_trade_count": no_trade,
-            "winrate":        winrate,
-            "total_pnl_pct":  total_pct,
-            "total_pnl_usdt": round(total_usd, 4),
-            "balance":        virtual_exchange.balance,
-            "leverage":       virtual_exchange.leverage,
-            "entry_usdt":     virtual_exchange.entry_usdt,
+            "trade_count":         closed,
+            "win_count":           wins,
+            "loss_count":          losses,
+            "no_trade_count":      no_trade,
+            "winrate":             winrate,
+            "total_pnl_pct":       total_pct,
+            "total_pnl_usdt":      round(total_usd, 4),
+            "balance":             virtual_exchange.balance,
+            "leverage":            virtual_exchange.leverage,
+            "entry_usdt":          virtual_exchange.entry_usdt,
+            "active_signal_count": engine._active_count(),
+            "max_active_signals":  int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
         }
     }
 
@@ -104,15 +107,16 @@ async def reset_stats(request: Request):
     engine = request.app.state.bot_engine
     engine.reset_stats()
     await ws_manager.broadcast("reset_all", {
-        "trade_count":    0,
-        "win_count":      0,
-        "loss_count":     0,
-        "no_trade_count": 0,
-        "total_pnl_pct":  0.0,
-        "total_pnl_usdt": 0.0,
-        "balance":        virtual_exchange.balance,
-        "signals":        [],
-        "timestamp":      int(time.time() * 1000),
+        "trade_count":         0,
+        "win_count":           0,
+        "loss_count":          0,
+        "no_trade_count":      0,
+        "total_pnl_pct":       0.0,
+        "total_pnl_usdt":      0.0,
+        "balance":             virtual_exchange.balance,
+        "signals":             [],
+        "active_signal_count": 0,
+        "timestamp":           int(time.time() * 1000),
     })
     return {"ok": True}
 
@@ -151,6 +155,7 @@ async def debug_status(request: Request):
     wins   = engine.state["win_count"]
     losses = engine.state["loss_count"]
     closed = wins + losses
+    active = engine._active_count()
     return {
         "running":      engine.running,
         "task_exists":  engine._task is not None,
@@ -158,10 +163,12 @@ async def debug_status(request: Request):
         "task_cancelled": engine._task.cancelled() if engine._task else None,
         "balance":      virtual_exchange.balance,
         "state_summary": {
-            "status":      engine.state["status"],
-            "trade_count": closed,
-            "win_count":   wins,
-            "loss_count":  losses,
-            "winrate":     round(wins / closed * 100, 2) if closed > 0 else 0.0,
+            "status":              engine.state["status"],
+            "trade_count":         closed,
+            "win_count":           wins,
+            "loss_count":          losses,
+            "winrate":             round(wins / closed * 100, 2) if closed > 0 else 0.0,
+            "active_signal_count": active,
+            "max_active_signals":  int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
         },
     }
