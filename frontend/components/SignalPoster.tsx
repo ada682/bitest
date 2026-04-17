@@ -886,16 +886,15 @@ function PosterModal({
     };
   }, [sym, isClosed]);
 
-  // ── FIX: Fallback — REST poll every 3s ───────────────────────────────────
+  // ── Fallback — REST poll every 3s ────────────────────────────────────────
   //
-  //  WS gives us price_tick every ~2s, but only for signals the bot is
-  //  actively monitoring. If the poster opens for a symbol whose price_tick
-  //  hasn't arrived yet (first few seconds), we do ONE REST fetch to seed
-  //  the initial value, then let WS take over.
+  //  Always-on safety net that runs regardless of WS state.
+  //  Backend /api/market/ticker hits the WS price cache (≤2s old), so this
+  //  is effectively real-time with zero extra MEXC API cost.
   //
-  //  We also poll at 3s intervals as a safety net in case WS drops.
-  //  The backend now returns the WS-cache price (not a slow MEXC REST call)
-  //  so this is effectively instant.
+  //  We always apply the REST price — WS will still "win" in practice because
+  //  price_tick fires every 3s and sets priceSource="ws" immediately.
+  //  If WS dies (ws_manager crash, network drop), REST keeps the price live.
   useEffect(() => {
     if (isClosed) return;
 
@@ -906,23 +905,17 @@ function PosterModal({
         const d    = json.data ?? {};
         const p    = parseFloat(d.lastPr ?? d.last ?? d.lastPrice ?? "0");
         if (p > 0) {
-          setLivePrice(prev => {
-            // Only update from REST if WS hasn't already given us a fresher value.
-            // We consider REST "fresher" only when priceSource is still "initial".
-            if (priceSource === "initial") {
-              setPriceSource("rest");
-              return p;
-            }
-            return prev;
-          });
+          // Always update — REST hits the backend WS cache so it's real-time.
+          // Only downgrade source label to "rest" if WS hasn't connected yet.
+          setLivePrice(p);
+          setPriceSource(src => src === "ws" ? "ws" : "rest");
         }
       } catch { /* silently ignore */ }
     };
 
-    fetchPrice();                                  // immediate seed
-    const timer = setInterval(fetchPrice, 3000);   // 3s safety-net poll
+    fetchPrice();                                  // immediate seed on open
+    const timer = setInterval(fetchPrice, 3000);   // 3s continuous safety-net
     return () => clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sym, isClosed]);
 
   // ── Derived values ───────────────────────────────────────────────────────
