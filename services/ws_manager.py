@@ -25,7 +25,11 @@ class ConnectionManager:
     async def broadcast(self, event: str, data):
         message = json.dumps({"event": event, "data": data})
         dead = set()
-        for ws in self.active:
+        # FIX: snapshot the set with list() before iterating.
+        # Without this, a concurrent disconnect (self.active.discard) that
+        # happens while we await ws.send_text() causes:
+        #   RuntimeError: Set changed size during iteration
+        for ws in list(self.active):
             try:
                 await ws.send_text(message)
             except Exception:
