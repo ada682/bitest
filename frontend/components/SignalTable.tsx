@@ -59,6 +59,7 @@ function EntryStatus({ signal }: { signal: Signal }) {
 function SignalCard({ s, leverage, entryUsdt, allowForClosed }: { s: Signal; leverage: number; entryUsdt?: number; allowForClosed?: boolean }) {
   return (
     <div className="px-4 py-3 border-b border-border/30 last:border-0">
+      {/* Top row: symbol + badges | PnL + Poster icon */}
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-mono font-medium text-text">
@@ -67,9 +68,13 @@ function SignalCard({ s, leverage, entryUsdt, allowForClosed }: { s: Signal; lev
           <DecisionBadge decision={s.decision} />
           {s.result && <ResultBadge result={s.result} />}
         </div>
-        <PnlCell pnl={s.pnl_pct} usdt={s.pnl_usdt} />
+        <div className="flex items-center gap-2 shrink-0">
+          <PnlCell pnl={s.pnl_pct} usdt={s.pnl_usdt} />
+          <PosterButton signal={s} leverage={leverage} entryUsdt={entryUsdt} allowForClosed={allowForClosed} />
+        </div>
       </div>
 
+      {/* Price grid */}
       <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-[11px]">
         <div>
           <span className="text-muted block">Entry</span>
@@ -93,6 +98,7 @@ function SignalCard({ s, leverage, entryUsdt, allowForClosed }: { s: Signal; lev
         </div>
       )}
 
+      {/* Bottom row: status + confidence | timestamp */}
       <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-muted/60">
         <div className="flex items-center gap-2">
           <span className={clsx(
@@ -108,16 +114,12 @@ function SignalCard({ s, leverage, entryUsdt, allowForClosed }: { s: Signal; lev
             <span className="text-muted/50">{s.confidence}% conf</span>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
-          {/* Poster button — only for in-trade signals on mobile */}
-          <PosterButton signal={s} leverage={leverage} entryUsdt={entryUsdt} allowForClosed={allowForClosed} />
-          <span>
-            {new Date(s.timestamp).toLocaleString("en-US", {
-              month: "2-digit", day: "2-digit",
-              hour: "2-digit", minute: "2-digit", hour12: false,
-            })}
-          </span>
-        </div>
+        <span>
+          {new Date(s.timestamp).toLocaleString("en-US", {
+            month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", hour12: false,
+          })}
+        </span>
       </div>
     </div>
   );
