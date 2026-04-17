@@ -798,6 +798,9 @@ function PosterModal({
   const [mode, setMode]     = useState<Mode>("roe");
   const [sharing, setSharing] = useState(false);
 
+  const isClosed = signal.status === "CLOSED" || signal.status === "INVALIDATED";
+  const sym      = signal.symbol; // e.g. "BTC_USDT"
+
   // ── Candle data for price chart ───────────────────────────────────────────
   const [candles, setCandles] = useState<number[][]>([]);
 
@@ -824,9 +827,6 @@ function PosterModal({
   );
   // Track source for debug label in UI
   const [priceSource, setPriceSource] = useState<"ws" | "rest" | "initial">("initial");
-
-  const isClosed = signal.status === "CLOSED" || signal.status === "INVALIDATED";
-  const sym      = signal.symbol; // e.g. "BTC_USDT"
 
   // ── FIX: Primary — WebSocket price_tick listener ─────────────────────────
   //
