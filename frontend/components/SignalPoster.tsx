@@ -83,7 +83,7 @@ function makeNoise(W: number, H: number): HTMLCanvasElement {
   return off;
 }
 
-// ─── COIN ICON (upgraded) ────────────────────────────────────────────────────
+// ─── COIN ICON ───────────────────────────────────────────────────────────────
 function drawCoinIcon(
   ctx: CanvasRenderingContext2D,
   cx: number, cy: number,
@@ -94,7 +94,6 @@ function drawCoinIcon(
   const R = 44;
   ctx.save();
 
-  // Outer dashed halo ring
   ctx.save();
   ctx.strokeStyle = h2r(T.a1, 0.18);
   ctx.lineWidth = 1;
@@ -105,7 +104,6 @@ function drawCoinIcon(
   ctx.setLineDash([]);
   ctx.restore();
 
-  // Thin solid ring
   ctx.save();
   ctx.strokeStyle = h2r(T.a1, 0.35);
   ctx.lineWidth = 1.5;
@@ -114,7 +112,6 @@ function drawCoinIcon(
   ctx.stroke();
   ctx.restore();
 
-  // Orbiting dots at 4 cardinal points
   [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2].forEach((angle, i) => {
     const dotR = R + 6;
     const dx = cx + dotR * Math.cos(angle);
@@ -125,7 +122,6 @@ function drawCoinIcon(
     ctx.fill();
   });
 
-  // Inner filled circle gradient
   const grad = ctx.createRadialGradient(cx - 12, cy - 14, 6, cx, cy, R);
   grad.addColorStop(0, T.a1);
   grad.addColorStop(0.5, T.a2);
@@ -135,7 +131,6 @@ function drawCoinIcon(
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Subtle grid lines inside
   ctx.save();
   ctx.beginPath();
   ctx.arc(cx, cy, R, 0, Math.PI * 2);
@@ -148,21 +143,18 @@ function drawCoinIcon(
   for (let iy = cy - R; iy <= cy + R; iy += 12) {
     ctx.beginPath(); ctx.moveTo(cx - R, iy); ctx.lineTo(cx + R, iy); ctx.stroke();
   }
-  // Highlight shine
   ctx.fillStyle = "rgba(255,255,255,0.13)";
   ctx.beginPath();
   ctx.arc(cx - 14, cy - 16, 20, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  // Inner ring stroke
   ctx.strokeStyle = h2r("#ffffff", 0.25);
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.arc(cx, cy, R * 0.6, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Ticker text
   const label = ticker.slice(0, 4).toUpperCase();
   const fs = label.length <= 3 ? 20 : 16;
   ctx.fillStyle = "#ffffff";
@@ -171,7 +163,6 @@ function drawCoinIcon(
   ctx.textBaseline = "middle";
   ctx.fillText(label, cx, cy + 2);
 
-  // Direction arrow small badge
   const badgeY = cy + R - 8;
   const sc = isLong ? "#4ade80" : "#f87171";
   ctx.beginPath();
@@ -191,6 +182,7 @@ function drawCoinIcon(
 }
 
 // ─── MAIN POSTER DRAW ────────────────────────────────────────────────────────
+// DPR param: pass 2 for HD export, 1 for preview
 function drawPoster(
   canvas: HTMLCanvasElement,
   signal: Signal,
@@ -200,21 +192,26 @@ function drawPoster(
   leverage: number,
   platform = "SonneTrade",
   website = "sonnetrades.vercel.app",
+  dpr = 1,
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
+  // Logical size
   const W = 540, H = 800;
-  canvas.width = W; canvas.height = H;
+  // Physical size = logical × dpr (HD when dpr=2)
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  // Scale all draw calls so we still think in 540×800
+  ctx.scale(dpr, dpr);
 
   const isPos = mode === "pnl" ? pnlVal >= 0 : roeVal >= 0;
   const T = isPos ? T_VIOLET : T_ROSE;
   const isLong = signal.decision === "LONG";
   const sc = isLong ? "#4ade80" : "#f87171";
 
-  const pair = signal.symbol.replace("_USDT", "");
+  const pair  = signal.symbol.replace("_USDT", "");
   const quote = "USDT";
-  const coin = `${pair}/${quote}`;
 
   const websiteDisplay = "http://" + website.replace(/^https?:\/\//, "");
 
@@ -224,12 +221,10 @@ function drawPoster(
   bgG.addColorStop(0, T.bg1); bgG.addColorStop(1, T.bg2);
   ctx.fillStyle = bgG; ctx.fill();
 
-  // Noise
   const noise = makeNoise(W, H);
   ctx.save(); rr(ctx, 0, 0, W, H, 20); ctx.clip();
   ctx.drawImage(noise, 0, 0); ctx.restore();
 
-  // Diagonal stripes
   ctx.save(); rr(ctx, 0, 0, W, H, 20); ctx.clip();
   ctx.strokeStyle = T.stripe; ctx.lineWidth = 1;
   for (let i = -H; i < W + H; i += 32) {
@@ -237,14 +232,12 @@ function drawPoster(
   }
   ctx.restore();
 
-  // Glow orbs
   [[W * 0.85, H * 0.15, 340, 0.22], [W * 0.1, H * 0.9, 220, 0.15], [-20, H * 0.45, 180, 0.1]].forEach(([ox, oy, or_, oa]) => {
     const g = ctx.createRadialGradient(ox, oy, 0, ox, oy, or_);
     g.addColorStop(0, h2r(T.glow, oa)); g.addColorStop(1, "transparent");
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   });
 
-  // Geometric accents
   ctx.save(); rr(ctx, 0, 0, W, H, 20); ctx.clip();
   ctx.save();
   ctx.translate(W - 30, 50); ctx.rotate(Math.PI / 8);
@@ -259,7 +252,6 @@ function drawPoster(
     ctx.closePath(); ctx.stroke();
   }
   ctx.restore();
-  // Cross hash bottom-left
   ctx.strokeStyle = h2r(T.a1, 0.06); ctx.lineWidth = 1;
   for (let xi = 20; xi < 120; xi += 14) {
     for (let yi = H - 130; yi < H - 10; yi += 14) {
@@ -267,7 +259,6 @@ function drawPoster(
       ctx.beginPath(); ctx.moveTo(xi, yi - 3); ctx.lineTo(xi, yi + 3); ctx.stroke();
     }
   }
-  // Dashed accent line
   ctx.strokeStyle = h2r(T.a1, 0.16); ctx.lineWidth = 1; ctx.setLineDash([4, 8]);
   ctx.beginPath(); ctx.moveTo(-10, 90); ctx.lineTo(110, -10); ctx.stroke();
   ctx.setLineDash([]); ctx.restore();
@@ -279,14 +270,12 @@ function drawPoster(
   hG.addColorStop(0, h2r(T.a1, 0.1)); hG.addColorStop(1, "transparent");
   ctx.fillStyle = hG; ctx.fill(); ctx.restore();
 
-  // Header border
   const hbG = ctx.createLinearGradient(0, 0, W, 0);
   hbG.addColorStop(0, "transparent"); hbG.addColorStop(0.2, h2r(T.a1, 0.35));
   hbG.addColorStop(0.8, h2r(T.a1, 0.35)); hbG.addColorStop(1, "transparent");
   ctx.strokeStyle = hbG; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(0, 88); ctx.lineTo(W, 88); ctx.stroke();
 
-  // Hex logo
   ctx.save(); ctx.translate(32, 44);
   const hexG = ctx.createLinearGradient(-14, -14, 14, 14);
   hexG.addColorStop(0, T.a1); hexG.addColorStop(1, T.a2);
@@ -305,7 +294,6 @@ function drawPoster(
   }
   ctx.closePath(); ctx.stroke(); ctx.restore();
 
-  // Platform name
   ctx.fillStyle = "#ffffff";
   ctx.font = "700 22px Outfit,sans-serif";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
@@ -314,14 +302,12 @@ function drawPoster(
   ctx.fillStyle = T.a1;
   ctx.beginPath(); ctx.arc(60 + pW, 33, 4, 0, Math.PI * 2); ctx.fill();
 
-  // Date
-  const ds = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-  ctx.fillStyle = "#383838";
+  const ds = new Date(signal.timestamp).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  ctx.fillStyle = "#555555";
   ctx.font = "400 10px \"JetBrains Mono\",monospace";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
   ctx.fillText(ds, 57, 60);
 
-  // LONG/SHORT pill
   const sBg = isLong ? h2r("#4ade80", 0.12) : h2r("#f87171", 0.12);
   const sBd = isLong ? h2r("#4ade80", 0.45) : h2r("#f87171", 0.45);
   const pillW = 96, pillH = 30;
@@ -338,7 +324,6 @@ function drawPoster(
   const iCx = 60, iCy = coinY + 56;
   drawCoinIcon(ctx, iCx, iCy, pair, T, isLong);
 
-  // Pair text
   const pairX = 122;
   ctx.fillStyle = "#ffffff";
   ctx.font = "900 58px \"Bebas Neue\",sans-serif";
@@ -349,7 +334,6 @@ function drawPoster(
   ctx.font = "300 26px \"JetBrains Mono\",monospace";
   ctx.fillText("/" + quote, pairX + bw + 4, coinY + 56);
 
-  // Sub-tags
   const tagY = coinY + 74;
   const tags = [
     { label: `${leverage}× LEVERAGE`, c: T.a1, bc: T.a2 },
@@ -381,8 +365,9 @@ function drawPoster(
   const roeStr = (roeVal >= 0 ? "+" : "") + roeVal.toLocaleString() + "%";
   const pnlStr = (pnlVal >= 0 ? "+" : "") + pnlVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " USDT";
 
+  let statsYBase = 370;
+
   if (mode === "both") {
-    // ROE on top, PnL below
     let fs = 80;
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     while (ctx.measureText(roeStr).width > W - 44 && fs > 40) {
@@ -390,26 +375,24 @@ function drawPoster(
     }
     const roeY = 260 + fs;
 
-    // Glow
     ctx.save();
     ctx.shadowColor = T.glow; ctx.shadowBlur = 50;
     ctx.fillStyle = T.a1; ctx.textAlign = "center";
     ctx.fillText(roeStr, W / 2, roeY);
     ctx.restore();
 
-    // Gradient text
     const rg = ctx.createLinearGradient(0, roeY - fs, 0, roeY + 8);
     rg.addColorStop(0, "#ffffff"); rg.addColorStop(0.5, T.a1); rg.addColorStop(1, T.a2);
     ctx.fillStyle = rg;
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     ctx.textAlign = "center"; ctx.fillText(roeStr, W / 2, roeY);
 
-    ctx.fillStyle = "#303030";
+    // FIX: label lebih terang
+    ctx.fillStyle = "#888888";
     ctx.font = "500 10px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center";
     ctx.fillText("R · E · T · U · R · N   O N   E · Q · U · I · T · Y", W / 2, roeY + 20);
 
-    // PnL badge
     const pnlBY = roeY + 44;
     const pnlFmt = pnlStr;
     ctx.font = "700 28px \"Bebas Neue\",sans-serif";
@@ -422,7 +405,7 @@ function drawPoster(
     ctx.fillText(pnlFmt, W / 2, pnlBY + 19);
     ctx.textBaseline = "alphabetic";
 
-    var statsYBase = pnlBY + 60;
+    statsYBase = pnlBY + 60;
   } else if (mode === "roe") {
     let fs = 108;
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
@@ -442,14 +425,15 @@ function drawPoster(
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     ctx.textAlign = "center"; ctx.fillText(roeStr, W / 2, roeY);
 
-    ctx.fillStyle = "#303030";
+    // FIX: label lebih terang
+    ctx.fillStyle = "#888888";
     ctx.font = "500 10px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center";
     ctx.fillText("R · E · T · U · R · N   O N   E · Q · U · I · T · Y", W / 2, roeY + 22);
 
-    var statsYBase = roeY + 48;
+    statsYBase = roeY + 48;
   } else {
-    // PnL only — big display
+    // PnL only
     let fs = 86;
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     while (ctx.measureText(pnlStr).width > W - 44 && fs > 40) {
@@ -470,53 +454,56 @@ function drawPoster(
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     ctx.textAlign = "center"; ctx.fillText(pnlStr, W / 2, pnlY);
 
-    ctx.fillStyle = "#303030";
+    // FIX: label lebih terang
+    ctx.fillStyle = "#888888";
     ctx.font = "500 10px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center";
     ctx.fillText("R · E · A · L · I · Z · E · D   P · R · O · F · I · T", W / 2, pnlY + 22);
 
-    var statsYBase = pnlY + 48;
+    statsYBase = pnlY + 48;
   }
 
-  // ── Stat cards (entry / TP / SL / leverage) ──────────────────────────────
+  // ── Stat cards (entry / TP / SL) ─────────────────────────────────────────
   const statDefs = [
-    { label: "ENTRY", val: signal.entry ? `$${signal.entry.toFixed(4)}` : "—" },
-    { label: "TAKE PROFIT", val: signal.tp ? `$${signal.tp.toFixed(4)}` : "—", c: "#4ade80" },
-    { label: "STOP LOSS",   val: signal.sl ? `$${signal.sl.toFixed(4)}` : "—", c: "#f87171" },
+    { label: "ENTRY",       val: signal.entry ? `$${signal.entry.toFixed(4)}` : "—",    c: "#e2e8f0" },   // FIX: bright white
+    { label: "TAKE PROFIT", val: signal.tp    ? `$${signal.tp.toFixed(4)}`    : "—",    c: "#86efac" },   // FIX: brighter green
+    { label: "STOP LOSS",   val: signal.sl    ? `$${signal.sl.toFixed(4)}`    : "—",    c: "#fca5a5" },   // FIX: brighter red
   ];
   const gap2 = 8, cW = (W - 56 - gap2 * (statDefs.length - 1)) / statDefs.length;
   statDefs.forEach((s, i) => {
     const sx = 28 + i * (cW + gap2), sy = statsYBase, sh = 68;
     rr(ctx, sx, sy, cW, sh, 12);
-    ctx.fillStyle = "rgba(255,255,255,0.03)"; ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.04)"; ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.09)"; ctx.lineWidth = 1; ctx.stroke();
     rr(ctx, sx, sy, cW, 3, { tl: 12, tr: 12, bl: 0, br: 0 });
     ctx.fillStyle = h2r(T.a1, 0.6); ctx.fill();
-    ctx.fillStyle = "#303030";
+
+    // FIX: label lebih terang (dari #303030 → #707070)
+    ctx.fillStyle = "#909090";
     ctx.font = "400 9px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(s.label, sx + cW / 2, sy + 22);
-    ctx.fillStyle = (s as any).c || "#e0e0e0";
+
+    // FIX: value jauh lebih terang
+    ctx.fillStyle = s.c;
     ctx.font = "700 15px \"Bebas Neue\",sans-serif";
     ctx.fillText(s.val, sx + cW / 2, sy + 50);
   });
   ctx.textBaseline = "alphabetic";
 
-  // ── Sparkline-style progress arc ─────────────────────────────────────────
+  // ── Sparkline ─────────────────────────────────────────────────────────────
   const arcY = statsYBase + 84;
   const chX = 28, chW = W - 56, chH = 100;
   rr(ctx, chX, arcY, chW, chH, 14);
   ctx.fillStyle = "rgba(255,255,255,0.018)"; ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1; ctx.stroke();
 
-  // Grid lines
   ctx.strokeStyle = "rgba(255,255,255,0.035)"; ctx.lineWidth = 1;
   [0.33, 0.66].forEach(p => {
     const ly = arcY + chH * p;
     ctx.beginPath(); ctx.moveTo(chX + 10, ly); ctx.lineTo(chX + chW - 10, ly); ctx.stroke();
   });
 
-  // Sparkline
   const spark = [12, 18, 15, 22, 19, 28, 24, 20, 30, 26, 34, 31, 40, 36, 44, 41, 50, 47, 55, 52, 60, 58, 68, 64, 72, 70, 80, 76, 85, 82, 90, 88, 96, 100];
   const nPts = spark.length, padX = 14, padY = 12;
   const plotW = chW - padX * 2, plotH = chH - padY * 2;
@@ -586,7 +573,6 @@ function drawPoster(
   ctx.font = "400 10px \"JetBrains Mono\",monospace";
   ctx.fillText("Trade smart. Trade fast. Trade with edge.", 30, botY + 54);
 
-  // URL chip
   ctx.font = "500 11px \"JetBrains Mono\",monospace";
   const urlW2 = ctx.measureText(websiteDisplay).width;
   const chipPad = 14, chipH = 28, chipW = urlW2 + chipPad * 2 + 20;
@@ -606,18 +592,37 @@ function drawPoster(
 
   drawQR(ctx, W - 74, botY + 16, 56, T.a1);
 
-  // Bottom accent strip
   const botStrip = ctx.createLinearGradient(0, 0, W, 0);
   botStrip.addColorStop(0, "transparent"); botStrip.addColorStop(0.2, T.a1);
   botStrip.addColorStop(0.8, T.a1); botStrip.addColorStop(1, "transparent");
   ctx.fillStyle = botStrip; ctx.fillRect(0, H - 4, W, 4);
 
-  // Vignette
   const vig = ctx.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.75);
   vig.addColorStop(0, "transparent"); vig.addColorStop(1, "rgba(0,0,0,0.35)");
   ctx.save(); rr(ctx, 0, 0, W, H, 20); ctx.clip();
   ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
   ctx.restore();
+}
+
+// ─── AUTO-CALCULATE ROE FROM SIGNAL ──────────────────────────────────────────
+function calcAutoROE(signal: Signal, leverage: number): number {
+  // If signal already has pnl_pct (closed trade), convert to ROE
+  if (signal.pnl_pct != null) {
+    // pnl_pct is already the move % on entry; ROE = pnl_pct * leverage
+    return parseFloat((signal.pnl_pct * leverage).toFixed(2));
+  }
+  // For open signals, estimate from current price vs entry
+  const entry = signal.entry ?? signal.current_price;
+  if (!entry || !signal.current_price) return 0;
+  const movePct = signal.decision === "LONG"
+    ? ((signal.current_price - entry) / entry) * 100
+    : ((entry - signal.current_price) / entry) * 100;
+  return parseFloat((movePct * leverage).toFixed(2));
+}
+
+function calcAutoPnL(signal: Signal): number {
+  if (signal.pnl_usdt != null) return signal.pnl_usdt;
+  return 0;
 }
 
 // ─── POSTER MODAL ────────────────────────────────────────────────────────────
@@ -628,51 +633,55 @@ function PosterModal({
   leverage: number;
   onClose: () => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const hdCanvasRef  = useRef<HTMLCanvasElement>(null); // off-screen HD canvas
   const [mode, setMode] = useState<Mode>("roe");
-  const [roeVal, setRoeVal] = useState(0);
-  const [pnlVal, setPnlVal] = useState(0);
   const [sharing, setSharing] = useState(false);
 
-  // Draw whenever inputs change
+  // Auto-calculated values — no manual input needed
+  const roeVal = calcAutoROE(signal, leverage);
+  const pnlVal = calcAutoPnL(signal);
+
+  // Draw preview (1× DPR) whenever inputs change
   useEffect(() => {
     if (!canvasRef.current) return;
-    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage);
+    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, undefined, undefined, 1);
   }, [signal, mode, roeVal, pnlVal, leverage]);
 
-  const getBlob = useCallback((): Promise<Blob> => {
+  // Returns a HD blob (2× DPR) for saving
+  const getHDBlob = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
-      if (!canvasRef.current) return reject(new Error("No canvas"));
-      canvasRef.current.toBlob((blob) => {
+      const hd = document.createElement("canvas");
+      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, undefined, undefined, 2);
+      hd.toBlob((blob) => {
         if (blob) resolve(blob);
         else reject(new Error("Canvas to Blob failed"));
       }, "image/png");
     });
-  }, []);
+  }, [signal, mode, roeVal, pnlVal, leverage]);
 
   const handleSave = useCallback(async () => {
-    const blob = await getBlob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
+    const blob = await getHDBlob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
     a.download = `sonnetrade-${signal.symbol}-poster.png`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [getBlob, signal.symbol]);
+  }, [getHDBlob, signal.symbol]);
 
   const handleShare = useCallback(async () => {
     setSharing(true);
     try {
-      const blob = await getBlob();
+      const blob = await getHDBlob();
       const file = new File([blob], `sonnetrade-${signal.symbol}.png`, { type: "image/png" });
       if (navigator.share && navigator.canShare({ files: [file] })) {
         await navigator.share({
           title: `${signal.symbol} ${signal.decision} Signal — SonneTrade`,
-          text: `Check out this ${signal.decision} signal on ${signal.symbol}!`,
+          text:  `Check out this ${signal.decision} signal on ${signal.symbol}!`,
           files: [file],
         });
       } else {
-        // Fallback: open image in new tab so user can long-press/save manually
         const url = URL.createObjectURL(blob);
         window.open(url, "_blank");
         setTimeout(() => URL.revokeObjectURL(url), 30_000);
@@ -682,7 +691,7 @@ function PosterModal({
     } finally {
       setSharing(false);
     }
-  }, [getBlob, signal.symbol, signal.decision]);
+  }, [getHDBlob, signal.symbol, signal.decision]);
 
   const isPos = mode === "pnl" ? pnlVal >= 0 : roeVal >= 0;
 
@@ -695,19 +704,12 @@ function PosterModal({
         {/* Modal header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold font-mono text-text">
-              Share Poster
-            </span>
+            <span className="text-sm font-semibold font-mono text-text">Share Poster</span>
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-border text-muted">
               {signal.symbol.replace("_USDT", "")}/USDT · {signal.decision}
             </span>
           </div>
-          <button
-            onClick={onClose}
-            className="text-muted hover:text-text transition-colors text-lg leading-none"
-          >
-            ✕
-          </button>
+          <button onClick={onClose} className="text-muted hover:text-text transition-colors text-lg leading-none">✕</button>
         </div>
 
         <div className="flex flex-col md:flex-row gap-0">
@@ -721,54 +723,45 @@ function PosterModal({
                   <button
                     key={m}
                     onClick={() => setMode(m)}
-                    className={`
-                      px-3 py-2 rounded-lg text-xs font-mono text-left transition-all border
-                      ${mode === m
+                    className={`px-3 py-2 rounded-lg text-xs font-mono text-left transition-all border ${
+                      mode === m
                         ? "border-accent/50 bg-accent/10 text-accent"
-                        : "border-border text-muted hover:text-text hover:border-border/80"}
-                    `}
+                        : "border-border text-muted hover:text-text hover:border-border/80"
+                    }`}
                   >
-                    {m === "roe" && "📊 ROE only"}
-                    {m === "pnl" && "💰 PnL only"}
+                    {m === "roe"  && "📊 ROE only"}
+                    {m === "pnl"  && "💰 PnL only"}
                     {m === "both" && "✨ ROE + PnL"}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* ROE input */}
-            {(mode === "roe" || mode === "both") && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-mono uppercase tracking-widest text-muted">
-                  ROE %
-                </label>
-                <input
-                  type="number"
-                  value={roeVal}
-                  onChange={(e) => setRoeVal(parseFloat(e.target.value) || 0)}
-                  className="bg-bg border border-border rounded-lg px-3 py-2 text-xs font-mono text-text outline-none focus:border-accent/50 transition-colors"
-                />
-                <span className={`text-[10px] font-mono ${roeVal >= 0 ? "text-success" : "text-danger"}`}>
-                  {roeVal >= 0 ? "▲ Profit" : "▼ Loss"} — {isPos ? "Purple" : "Rose"} theme
-                </span>
-              </div>
-            )}
-
-            {/* PnL input */}
-            {(mode === "pnl" || mode === "both") && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-mono uppercase tracking-widest text-muted">
-                  PnL (USDT)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={pnlVal}
-                  onChange={(e) => setPnlVal(parseFloat(e.target.value) || 0)}
-                  className="bg-bg border border-border rounded-lg px-3 py-2 text-xs font-mono text-text outline-none focus:border-accent/50 transition-colors"
-                />
-              </div>
-            )}
+            {/* Auto-calculated values display (read-only) */}
+            <div className="flex flex-col gap-2 bg-bg/60 rounded-xl p-3 border border-border/50">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-muted mb-1">Auto-calculated</span>
+              {(mode === "roe" || mode === "both") && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[11px] font-mono text-muted">ROE</span>
+                  <span className={`text-xs font-mono font-semibold ${roeVal >= 0 ? "text-success" : "text-danger"}`}>
+                    {roeVal >= 0 ? "+" : ""}{roeVal}%
+                  </span>
+                </div>
+              )}
+              {(mode === "pnl" || mode === "both") && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[11px] font-mono text-muted">PnL</span>
+                  <span className={`text-xs font-mono font-semibold ${pnlVal >= 0 ? "text-success" : "text-danger"}`}>
+                    {pnlVal >= 0 ? "+" : ""}{pnlVal.toFixed(2)} USDT
+                  </span>
+                </div>
+              )}
+              <p className="text-[9px] font-mono text-muted/50 mt-1 leading-relaxed">
+                {signal.pnl_pct != null
+                  ? "From closed trade result"
+                  : "Estimated from current price vs entry"}
+              </p>
+            </div>
 
             {/* Signal info */}
             <div className="border-t border-border pt-3 flex flex-col gap-1.5 text-[11px] font-mono">
@@ -784,6 +777,14 @@ function PosterModal({
                 <span>SL</span>
                 <span className="text-danger">{signal.sl ? `$${signal.sl.toFixed(4)}` : "—"}</span>
               </div>
+              {signal.pnl_pct != null && (
+                <div className="flex justify-between text-muted">
+                  <span>Result</span>
+                  <span className={signal.pnl_pct >= 0 ? "text-success" : "text-danger"}>
+                    {signal.result} · {signal.pnl_pct >= 0 ? "+" : ""}{signal.pnl_pct.toFixed(4)}%
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Action buttons */}
@@ -795,7 +796,7 @@ function PosterModal({
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
-                Save PNG
+                Save HD PNG
               </button>
               <button
                 onClick={handleShare}
@@ -827,17 +828,25 @@ function PosterModal({
   );
 }
 
-// ─── POSTER BUTTON (export this into SignalTable) ─────────────────────────────
+// ─── POSTER BUTTON ────────────────────────────────────────────────────────────
+// allowForClosed=true → tampilkan untuk signal yang sudah closed (history page)
 export default function PosterButton({
   signal,
   leverage = 10,
+  allowForClosed = false,
 }: {
   signal: Signal;
   leverage?: number;
+  allowForClosed?: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
-  if (!signal.entry_hit || signal.status !== "OPEN") return null;
+  // Show for: in-trade (entry hit & OPEN), or explicitly allowed for closed
+  const shouldShow =
+    (signal.entry_hit && signal.status === "OPEN") ||
+    (allowForClosed && signal.status === "CLOSED" && signal.result != null);
+
+  if (!shouldShow) return null;
 
   return (
     <>
