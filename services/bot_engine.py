@@ -510,6 +510,10 @@ class BotEngine:
         max_duration = 60 * 60 * 8   # 8 hours
         start        = time.time()
         entry_hit    = (entry <= 0)  # treat "no entry level" as already filled
+    
+        # ── Throttle constants for price_tick broadcasts ──────────────
+        PRICE_TICK_INTERVAL = 3   # seconds between price_tick WS broadcasts
+        _last_tick_emit: float = start  # initialize with start time
 
         # ── Deteksi arah pendekatan entry ──────────────────────────────
         _start_price = float(signal.get("current_price") or entry)
@@ -532,9 +536,9 @@ class BotEngine:
             if not self.running:
                 break
 
-            signal = self._find_signal(sig_id)
-            if not signal or signal.get("status") == "CLOSED":
-                break
+        signal = self._find_signal(sig_id)
+        if not signal or signal.get("status") == "CLOSED":
+            break
 
             # ── Ambil harga dari WS price cache (non-blocking) ────────
             # Tunggu update berikutnya — max 5s sebelum re-check state
@@ -550,7 +554,22 @@ class BotEngine:
                 if price <= 0:
                     continue
 
-            # ── Invalidation check (sebelum entry) ────────────────────
+        # ── Live current_price update (so frontend sees fresh price) ──
+            signal["current_price"] = price
+
+        # ── Throttled price_tick broadcast to frontend ─────────────────
+            now_t = time.time()
+            if now_t - _last_tick_emit >= PRICE_TICK_INTERVAL:
+                self._emit("price_tick", {
+                    "id":        sig_id,
+                    "symbol":    symbol,
+                    "price":     price,
+                    "entry_hit": entry_hit,
+                    "timestamp": int(now_t * 1000),
+                })
+                _last_tick_emit = now_t
+
+        # ── Invalidation check (sebelum entry) ────────────────────
             if inv_f and not entry_hit:
                 inv_hit = (
                     (direction == "LONG"  and price <= inv_f) or
@@ -581,7 +600,7 @@ class BotEngine:
                     price_feed.unwatch(symbol)
                     break
 
-            # ── Entry gate ────────────────────────────────────────────
+        # ── Entry gate ────────────────────────────────────────────
             if not entry_hit:
                 if direction == "LONG":
                     if _pullback_entry:
@@ -603,7 +622,7 @@ class BotEngine:
                     continue   # belum menyentuh entry, tunggu
                 continue       # re-check on next tick
 
-            # ── TP / SL check (setelah entry) ─────────────────────────
+        # ── TP / SL check (setelah entry) ─────────────────────────
             hit = None
             if direction == "LONG":
                 if price >= tp_f:   hit = "TP"
@@ -661,7 +680,7 @@ class BotEngine:
             signal = self._find_signal(sig_id)
             if signal and signal.get("status") == "OPEN":
                 print(f"  ⏰ Signal {sig_id} timed out (8h) — staying OPEN")
-                # Jangan unwatch — signal masih OPEN, feed tetap jaga harga
+                    # Jangan unwatch — signal masih OPEN, feed tetap jaga harga
 
     def _find_signal(self, sig_id: str) -> Optional[Dict]:
         for s in self.state["signals"]:
