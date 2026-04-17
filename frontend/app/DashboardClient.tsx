@@ -341,6 +341,7 @@ export default function DashboardClient() {
                   signals={signals.slice(0, 30)}
                   loading={loading}
                   leverage={vBalance.leverage} 
+                  entryUsdt={vBalance.entry_usdt}
                 />
               </div>
 
@@ -428,6 +429,7 @@ export default function DashboardClient() {
                 signals={closedSigs}
                 loading={historyLoading}
                 leverage={vBalance.leverage}  
+                entryUsdt={vBalance.entry_usdt}
               />
             </div>
           </div>
