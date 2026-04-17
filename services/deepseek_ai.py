@@ -92,6 +92,7 @@ NO TRADE RULE:
 - No clear void → NO TRADE
 - Bad structure → NO TRADE
 - Entry too close to price → NO TRADE
+- If very low volume → NO TRADE
 
 ----------------------------------------
 REVERSAL RULE (ADVANCED):
