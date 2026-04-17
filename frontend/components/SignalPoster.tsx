@@ -207,6 +207,7 @@ function drawPoster(
   platform = "SonneTrade",
   website = "sonnetrades.vercel.app",
   dpr = 1,
+  candles: number[][] = [],
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -510,38 +511,186 @@ function drawPoster(
   });
   ctx.textBaseline = "alphabetic";
 
-  // ── Sparkline ─────────────────────────────────────────────────────────────
+  // ── Price Chart (real candle data) ────────────────────────────────────────
   const arcY = statsYBase + 84;
-  const chX = 28, chW = W - 56, chH = 100;
+  const chX = 28, chW = W - 56, chH = 120;
+
+  const _entry2 = signal.entry != null ? Number(signal.entry) : null;
+  const _tp2    = signal.tp    != null ? Number(signal.tp)    : null;
+  const _sl2    = signal.sl    != null ? Number(signal.sl)    : null;
+  const _cur2   = currentPrice > 0 ? currentPrice : (signal.current_price ?? null);
+
+  // Build price array from real candles; fallback to synthetic
+  let prices: number[];
+  let candleTimes: number[] = [];
+  if (candles && candles.length > 2) {
+    prices      = candles.map(c => parseFloat(String(c[4])));
+    candleTimes = candles.map(c => Number(c[0]));
+  } else {
+    // Synthetic fallback centered around entry price
+    const base = _entry2 ?? (_cur2 ?? 100);
+    const synth = [0,-0.3,0.2,-0.5,0.4,0.1,-0.2,0.6,0.3,0.7,0.2,0.5,0.3,0.8,0.4,0.9,0.6,1.1,0.8,1.3,1.0,1.5,1.2,1.8,1.4,2.0,1.6,2.2,1.9,2.5,2.1,2.7,2.4,3.0];
+    prices = synth.map(d => base * (1 + d * 0.001));
+  }
+
+  // Determine y-range to fit all key levels
+  const allPr = [...prices];
+  if (_entry2 && _entry2 > 0) allPr.push(_entry2);
+  if (_tp2    && _tp2    > 0) allPr.push(_tp2);
+  if (_sl2    && _sl2    > 0) allPr.push(_sl2);
+  if (_cur2   && _cur2   > 0) allPr.push(_cur2);
+  const rawMin = Math.min(...allPr), rawMax = Math.max(...allPr);
+  const rawRng = rawMax - rawMin || rawMax * 0.02 || 1;
+  const pad2   = rawRng * 0.2;
+  const yMin2  = rawMin - pad2, yMax2 = rawMax + pad2, yRng2 = yMax2 - yMin2;
+
+  const toX2 = (i: number) =>
+    chX + 16 + (i / Math.max(prices.length - 1, 1)) * (chW - 32);
+  const toY2 = (v: number) =>
+    arcY + chH - 12 - ((v - yMin2) / yRng2) * (chH - 24);
+
+  // ── Chart background ──────────────────────────────────────────────────────
   rr(ctx, chX, arcY, chW, chH, 14);
   ctx.fillStyle = "rgba(255,255,255,0.018)"; ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.lineWidth = 1; ctx.stroke();
 
-  ctx.strokeStyle = "rgba(255,255,255,0.035)"; ctx.lineWidth = 1;
-  [0.33, 0.66].forEach(p => {
+  // Subtle horizontal grid
+  ctx.strokeStyle = "rgba(255,255,255,0.03)"; ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(p => {
     const ly = arcY + chH * p;
-    ctx.beginPath(); ctx.moveTo(chX + 10, ly); ctx.lineTo(chX + chW - 10, ly); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(chX + 14, ly); ctx.lineTo(chX + chW - 14, ly); ctx.stroke();
   });
 
-  const spark = [12,18,15,22,19,28,24,20,30,26,34,31,40,36,44,41,50,47,55,52,60,58,68,64,72,70,80,76,85,82,90,88,96,100];
-  const mn = Math.min(...spark), mx = Math.max(...spark), rng = mx - mn || 1;
-  const pts = spark.map((v, i) => ({
-    x: chX + 14 + (i / (spark.length - 1)) * (chW - 28),
-    y: arcY + chH - 14 - ((v - mn) / rng) * (chH - 28),
-  }));
+  // ── TP dashed line ────────────────────────────────────────────────────────
+  if (_tp2 && _tp2 > 0) {
+    const tpY2 = toY2(_tp2);
+    if (tpY2 > arcY + 8 && tpY2 < arcY + chH - 8) {
+      ctx.strokeStyle = "rgba(74,222,128,0.45)"; ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(chX + 14, tpY2); ctx.lineTo(chX + chW - 14, tpY2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#4ade80";
+      ctx.font = "500 7.5px \"JetBrains Mono\",monospace";
+      ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      ctx.fillText(`TP ${smartFmt(_tp2)}`, chX + chW - 16, tpY2 - 6);
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+
+  // ── SL dashed line ────────────────────────────────────────────────────────
+  if (_sl2 && _sl2 > 0) {
+    const slY2 = toY2(_sl2);
+    if (slY2 > arcY + 8 && slY2 < arcY + chH - 8) {
+      ctx.strokeStyle = "rgba(248,113,113,0.45)"; ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(chX + 14, slY2); ctx.lineTo(chX + chW - 14, slY2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#f87171";
+      ctx.font = "500 7.5px \"JetBrains Mono\",monospace";
+      ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      ctx.fillText(`SL ${smartFmt(_sl2)}`, chX + chW - 16, slY2 + 7);
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+
+  // ── Entry dashed line ─────────────────────────────────────────────────────
+  if (_entry2 && _entry2 > 0) {
+    const entY2 = toY2(_entry2);
+    if (entY2 > arcY + 8 && entY2 < arcY + chH - 8) {
+      ctx.strokeStyle = "rgba(255,255,255,0.22)"; ctx.lineWidth = 1;
+      ctx.setLineDash([2, 5]);
+      ctx.beginPath(); ctx.moveTo(chX + 14, entY2); ctx.lineTo(chX + chW - 14, entY2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // ── Price line (area fill first) ──────────────────────────────────────────
+  const pts2 = prices.map((v, i) => ({ x: toX2(i), y: toY2(v) }));
+  const lastPts = pts2[pts2.length - 1];
 
   const grad2 = ctx.createLinearGradient(0, arcY, 0, arcY + chH);
-  grad2.addColorStop(0, h2r(T.a2, 0.35)); grad2.addColorStop(1, "transparent");
+  grad2.addColorStop(0, h2r(T.a2, 0.38)); grad2.addColorStop(1, "transparent");
   ctx.beginPath();
-  pts.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
-  ctx.lineTo(pts[pts.length - 1].x, arcY + chH - 8);
-  ctx.lineTo(pts[0].x, arcY + chH - 8);
+  pts2.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
+  ctx.lineTo(lastPts.x, arcY + chH - 8);
+  ctx.lineTo(pts2[0].x, arcY + chH - 8);
   ctx.closePath();
   ctx.fillStyle = grad2; ctx.fill();
 
   ctx.beginPath();
-  pts.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
-  ctx.strokeStyle = T.a1; ctx.lineWidth = 2; ctx.stroke();
+  pts2.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
+  ctx.strokeStyle = T.a1; ctx.lineWidth = 2;
+  ctx.lineJoin = "round"; ctx.stroke();
+
+  // ── Entry marker on price line ────────────────────────────────────────────
+  if (_entry2 && _entry2 > 0 && prices.length > 2) {
+    // Find candle closest in time to signal.timestamp
+    let entXIdx = Math.floor(prices.length * 0.35); // default ~35% from left
+    if (candleTimes.length > 0 && signal.timestamp) {
+      let minDiff = Infinity;
+      candleTimes.forEach((t, i) => {
+        const diff = Math.abs(t - signal.timestamp);
+        if (diff < minDiff) { minDiff = diff; entXIdx = i; }
+      });
+    }
+    const entMX = toX2(entXIdx);
+    const entMY = toY2(_entry2);
+
+    // Vertical tick at entry x
+    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(entMX, arcY + 6); ctx.lineTo(entMX, arcY + chH - 6); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Entry dot (white ring)
+    ctx.beginPath(); ctx.arc(entMX, entMY, 5, 0, Math.PI * 2);
+    ctx.fillStyle = T.bg1; ctx.fill();
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5; ctx.stroke();
+
+    // Inner accent dot
+    ctx.beginPath(); ctx.arc(entMX, entMY, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = T.a1; ctx.fill();
+
+    // "ENTRY" label below x-axis tick
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.font = "500 7px \"JetBrains Mono\",monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText("ENTRY", entMX, arcY + chH - 11);
+    ctx.textBaseline = "alphabetic";
+  }
+
+  // ── Current price dot (glowing, at rightmost candle) ─────────────────────
+  if (_cur2 && _cur2 > 0 && prices.length > 0) {
+    // Use the actual live price for y, but pin to last x
+    const cpX = toX2(prices.length - 1);
+    const cpY = toY2(_cur2);
+
+    // Outer glow ring
+    ctx.save();
+    ctx.shadowColor = T.a1; ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.arc(cpX, cpY, 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = T.a1; ctx.fill();
+    ctx.restore();
+    // White inner dot
+    ctx.beginPath(); ctx.arc(cpX, cpY, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff"; ctx.fill();
+
+    // Price label (left side of dot)
+    const prLabel = `$${smartFmt(_cur2)}`;
+    ctx.font = "600 8.5px \"JetBrains Mono\",monospace";
+    const lblW = ctx.measureText(prLabel).width;
+    const lblX = cpX - lblW - 10;
+    const lblY = cpY - 6;
+    if (lblX > chX + 14) {
+      // pill background
+      rr(ctx, lblX - 4, lblY - 3, lblW + 8, 13, 3);
+      ctx.fillStyle = h2r(T.a2, 0.5); ctx.fill();
+      ctx.fillStyle = T.a1;
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(prLabel, lblX, lblY + 3.5);
+      ctx.textBaseline = "alphabetic";
+    }
+  }
 
   // ── Bottom bar ────────────────────────────────────────────────────────────
   const botY = arcY + chH + 24;
@@ -648,6 +797,26 @@ function PosterModal({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [mode, setMode]     = useState<Mode>("roe");
   const [sharing, setSharing] = useState(false);
+
+  // ── Candle data for price chart ───────────────────────────────────────────
+  const [candles, setCandles] = useState<number[][]>([]);
+
+  useEffect(() => {
+    const fetchCandles = async () => {
+      try {
+        const res  = await fetch(`/api/market/candles/${sym}?granularity=5m&limit=60`);
+        const json = await res.json();
+        const data = json.data ?? [];
+        if (Array.isArray(data) && data.length > 2) {
+          setCandles(data);
+        }
+      } catch { /* silently ignore */ }
+    };
+    fetchCandles();
+    // Refresh candles every 30s to keep chart relatively fresh
+    const t = setInterval(fetchCandles, 30_000);
+    return () => clearInterval(t);
+  }, [sym]);
 
   // ── Live price state ─────────────────────────────────────────────────────
   const [livePrice, setLivePrice] = useState<number>(
@@ -768,20 +937,20 @@ function PosterModal({
   // ── Canvas redraw whenever any input changes ──────────────────────────────
   useEffect(() => {
     if (!canvasRef.current) return;
-    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 1);
-  }, [signal, mode, roeVal, pnlVal, leverage, livePrice]);
+    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 1, candles);
+  }, [signal, mode, roeVal, pnlVal, leverage, livePrice, candles]);
 
   // ── HD export blob ────────────────────────────────────────────────────────
   const getHDBlob = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const hd = document.createElement("canvas");
-      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 2);
+      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 2, candles);
       hd.toBlob((blob) => {
         if (blob) resolve(blob);
         else reject(new Error("Canvas to Blob failed"));
       }, "image/png");
     });
-  }, [signal, mode, roeVal, pnlVal, leverage, livePrice]);
+  }, [signal, mode, roeVal, pnlVal, leverage, livePrice, candles]);
 
   const handleSave = useCallback(async () => {
     const blob = await getHDBlob();
