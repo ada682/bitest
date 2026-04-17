@@ -9,6 +9,9 @@ import os
 import hmac
 import hashlib
 import json
+import logging  # ← FIX: was missing, caused NameError in get_ticker()
+
+logger = logging.getLogger(__name__)  # ← FIX: was missing
 
 MEXC_BASE_URL = "https://api.mexc.com"
 
@@ -93,7 +96,7 @@ class MexcClient:
         if isinstance(data, list):
             data = data[0] if data else {}
         if not data or data.get("lastPrice") is None:
-            logger.warning(f"Ticker not found for {symbol}: {resp}")
+            logger.warning(f"Ticker not found for {symbol}: {resp}")  # ← now works
             return {"error": "not_found", "last": "0", "lastPr": "0"}
         last = str(data.get("lastPrice", data.get("last", "0")))
         return {
