@@ -83,6 +83,21 @@ function makeNoise(W: number, H: number): HTMLCanvasElement {
   return off;
 }
 
+// ─── SMART PRICE FORMATTER ───────────────────────────────────────────────────
+// Handles tiny numbers like 0.000002 by auto-scaling decimal places.
+function smartFmt(n: number | null | undefined, withDollar = false): string {
+  if (n == null) return "—";
+  const abs = Math.abs(n);
+  let str: string;
+  if (abs === 0)         str = "0";
+  else if (abs >= 10000) str = n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  else if (abs >= 1)     str = n.toFixed(4);
+  else if (abs >= 0.01)  str = n.toFixed(6);
+  else if (abs >= 0.0001) str = n.toFixed(8);
+  else                   str = n.toPrecision(4);
+  return withDollar ? `$${str}` : str;
+}
+
 // ─── COIN ICON ───────────────────────────────────────────────────────────────
 function drawCoinIcon(
   ctx: CanvasRenderingContext2D,
@@ -190,6 +205,7 @@ function drawPoster(
   roeVal: number,
   pnlVal: number,
   leverage: number,
+  currentPrice: number,       // ← live current price
   platform = "SonneTrade",
   website = "sonnetrades.vercel.app",
   dpr = 1,
@@ -387,7 +403,6 @@ function drawPoster(
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     ctx.textAlign = "center"; ctx.fillText(roeStr, W / 2, roeY);
 
-    // FIX: label lebih terang
     ctx.fillStyle = "#888888";
     ctx.font = "500 10px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center";
@@ -425,7 +440,6 @@ function drawPoster(
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     ctx.textAlign = "center"; ctx.fillText(roeStr, W / 2, roeY);
 
-    // FIX: label lebih terang
     ctx.fillStyle = "#888888";
     ctx.font = "500 10px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center";
@@ -454,7 +468,6 @@ function drawPoster(
     ctx.font = `900 ${fs}px "Bebas Neue",sans-serif`;
     ctx.textAlign = "center"; ctx.fillText(pnlStr, W / 2, pnlY);
 
-    // FIX: label lebih terang
     ctx.fillStyle = "#888888";
     ctx.font = "500 10px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center";
@@ -463,17 +476,39 @@ function drawPoster(
     statsYBase = pnlY + 48;
   }
 
-  // ── Stat cards (entry / TP / SL) ─────────────────────────────────────────
-  // Safely convert to Number — AI may return strings instead of floats
+  // ── Stat cards (current price / entry / TP / SL) ──────────────────────────
+  // Uses smartFmt so tiny prices like 0.000002 display correctly
+  const _cur   = currentPrice > 0 ? currentPrice : (signal.current_price ?? null);
   const _entry = signal.entry != null ? Number(signal.entry) : null;
   const _tp    = signal.tp    != null ? Number(signal.tp)    : null;
   const _sl    = signal.sl    != null ? Number(signal.sl)    : null;
+
   const statDefs = [
-    { label: "ENTRY",       val: (_entry != null && _entry > 0) ? `$${_entry.toFixed(4)}` : "—", c: "#e2e8f0" },
-    { label: "TAKE PROFIT", val: (_tp    != null && _tp    > 0) ? `$${_tp.toFixed(4)}`    : "—", c: "#86efac" },
-    { label: "STOP LOSS",   val: (_sl    != null && _sl    > 0) ? `$${_sl.toFixed(4)}`    : "—", c: "#fca5a5" },
+    {
+      label: "CURRENT",
+      val: (_cur != null && _cur > 0) ? `$${smartFmt(_cur)}` : "—",
+      c: "#93c5fd",   // blue
+    },
+    {
+      label: "ENTRY",
+      val: (_entry != null && _entry > 0) ? `$${smartFmt(_entry)}` : "—",
+      c: "#e2e8f0",
+    },
+    {
+      label: "TAKE PROFIT",
+      val: (_tp != null && _tp > 0) ? `$${smartFmt(_tp)}` : "—",
+      c: "#86efac",
+    },
+    {
+      label: "STOP LOSS",
+      val: (_sl != null && _sl > 0) ? `$${smartFmt(_sl)}` : "—",
+      c: "#fca5a5",
+    },
   ];
-  const gap2 = 8, cW = (W - 56 - gap2 * (statDefs.length - 1)) / statDefs.length;
+
+  const gap2 = 7;
+  const cW = (W - 56 - gap2 * (statDefs.length - 1)) / statDefs.length;
+
   statDefs.forEach((s, i) => {
     const sx = 28 + i * (cW + gap2), sy = statsYBase, sh = 68;
     rr(ctx, sx, sy, cW, sh, 12);
@@ -482,15 +517,19 @@ function drawPoster(
     rr(ctx, sx, sy, cW, 3, { tl: 12, tr: 12, bl: 0, br: 0 });
     ctx.fillStyle = h2r(T.a1, 0.6); ctx.fill();
 
-    // FIX: label lebih terang (dari #303030 → #707070)
     ctx.fillStyle = "#909090";
     ctx.font = "400 9px \"JetBrains Mono\",monospace";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(s.label, sx + cW / 2, sy + 22);
 
-    // FIX: value jauh lebih terang
+    // Auto-shrink font for long value strings (e.g. 8-decimal prices)
+    let vfs = 14;
+    ctx.font = `700 ${vfs}px "Bebas Neue",sans-serif`;
+    while (ctx.measureText(s.val).width > cW - 8 && vfs > 9) {
+      vfs -= 1; ctx.font = `700 ${vfs}px "Bebas Neue",sans-serif`;
+    }
     ctx.fillStyle = s.c;
-    ctx.font = "700 15px \"Bebas Neue\",sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(s.val, sx + cW / 2, sy + 50);
   });
   ctx.textBaseline = "alphabetic";
@@ -609,12 +648,13 @@ function drawPoster(
 }
 
 // ─── AUTO-CALCULATE ROE FROM SIGNAL ──────────────────────────────────────────
-function calcAutoROE(signal: Signal, leverage: number): number {
+// livePrice overrides signal.current_price so poster updates in real-time.
+function calcAutoROE(signal: Signal, leverage: number, livePrice?: number): number {
   if (signal.pnl_pct != null) {
     return parseFloat((Number(signal.pnl_pct) * leverage).toFixed(2));
   }
   const entry = Number(signal.entry ?? signal.current_price);
-  const cur   = Number(signal.current_price);
+  const cur   = livePrice ?? Number(signal.current_price);
   if (!entry || !cur) return 0;
   const movePct = signal.decision === "LONG"
     ? ((cur - entry) / entry) * 100
@@ -622,10 +662,10 @@ function calcAutoROE(signal: Signal, leverage: number): number {
   return parseFloat((movePct * leverage).toFixed(2));
 }
 
-function calcAutoPnL(signal: Signal, leverage: number, entryUsdt = 100): number {
+function calcAutoPnL(signal: Signal, leverage: number, entryUsdt = 100, livePrice?: number): number {
   if (signal.pnl_usdt != null) return Number(signal.pnl_usdt);
   const entry = Number(signal.entry ?? signal.current_price);
-  const cur   = Number(signal.current_price);
+  const cur   = livePrice ?? Number(signal.current_price);
   if (!entry || !cur) return 0;
   const movePct = signal.decision === "LONG"
     ? (cur - entry) / entry
@@ -642,32 +682,61 @@ function PosterModal({
   entryUsdt?: number;
   onClose: () => void;
 }) {
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const hdCanvasRef  = useRef<HTMLCanvasElement>(null); // off-screen HD canvas
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
   const [mode, setMode] = useState<Mode>("roe");
   const [sharing, setSharing] = useState(false);
 
-  // Auto-calculated values — no manual input needed
-  const roeVal = calcAutoROE(signal, leverage);
-const pnlVal = calcAutoPnL(signal, leverage, entryUsdt);
+  // ── Live price polling ────────────────────────────────────────────────────
+  // Polls /api/market/ticker every 2s so ROE/PnL update in real-time
+  // while the poster is open. For closed signals we skip polling.
+  const [livePrice, setLivePrice] = useState<number>(
+    Number(signal.current_price) || 0,
+  );
+
+  useEffect(() => {
+    // Closed signals already have final pnl — no need to poll
+    if (signal.status === "CLOSED" || signal.status === "INVALIDATED") return;
+
+    const sym = signal.symbol; // e.g. "BTC_USDT"
+
+    const fetchPrice = async () => {
+      try {
+        const res  = await fetch(`/api/market/ticker/${sym}`);
+        const json = await res.json();
+        const d    = json.data ?? {};
+        const p    = parseFloat(d.lastPr ?? d.last ?? d.lastPrice ?? "0");
+        if (p > 0) setLivePrice(p);
+      } catch {
+        // silently ignore — keep last known price
+      }
+    };
+
+    fetchPrice();                                   // immediate first fetch
+    const timer = setInterval(fetchPrice, 2000);    // then every 2s
+    return () => clearInterval(timer);
+  }, [signal.symbol, signal.status]);
+
+  // Auto-calculated values using live price
+  const roeVal = calcAutoROE(signal, leverage, livePrice > 0 ? livePrice : undefined);
+  const pnlVal = calcAutoPnL(signal, leverage, entryUsdt, livePrice > 0 ? livePrice : undefined);
 
   // Draw preview (1× DPR) whenever inputs change
   useEffect(() => {
     if (!canvasRef.current) return;
-    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, undefined, undefined, 1);
-  }, [signal, mode, roeVal, pnlVal, leverage]);
+    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 1);
+  }, [signal, mode, roeVal, pnlVal, leverage, livePrice]);
 
   // Returns a HD blob (2× DPR) for saving
   const getHDBlob = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const hd = document.createElement("canvas");
-      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, undefined, undefined, 2);
+      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 2);
       hd.toBlob((blob) => {
         if (blob) resolve(blob);
         else reject(new Error("Canvas to Blob failed"));
       }, "image/png");
     });
-  }, [signal, mode, roeVal, pnlVal, leverage]);
+  }, [signal, mode, roeVal, pnlVal, leverage, livePrice]);
 
   const handleSave = useCallback(async () => {
     const blob = await getHDBlob();
@@ -746,9 +815,26 @@ const pnlVal = calcAutoPnL(signal, leverage, entryUsdt);
               </div>
             </div>
 
-            {/* Auto-calculated values display (read-only) */}
+            {/* Live-calculated values display */}
             <div className="flex flex-col gap-2 bg-bg/60 rounded-xl p-3 border border-border/50">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-muted mb-1">Auto-calculated</span>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono uppercase tracking-widest text-muted">Live values</span>
+                {signal.status === "OPEN" && (
+                  <span className="flex items-center gap-1 text-[9px] font-mono text-accent/70">
+                    <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                    live
+                  </span>
+                )}
+              </div>
+
+              {/* Current price — always shown */}
+              <div className="flex justify-between items-center">
+                <span className="text-[11px] font-mono text-muted">Price</span>
+                <span className="text-xs font-mono font-semibold text-blue-300">
+                  ${smartFmt(livePrice > 0 ? livePrice : signal.current_price)}
+                </span>
+              </div>
+
               {(mode === "roe" || mode === "both") && (
                 <div className="flex justify-between items-center">
                   <span className="text-[11px] font-mono text-muted">ROE</span>
@@ -768,23 +854,41 @@ const pnlVal = calcAutoPnL(signal, leverage, entryUsdt);
               <p className="text-[9px] font-mono text-muted/50 mt-1 leading-relaxed">
                 {signal.pnl_pct != null
                   ? "From closed trade result"
-                  : "Save this for your generation"}
+                  : "Updates every 2s from MEXC"}
               </p>
             </div>
 
             {/* Signal info */}
             <div className="border-t border-border pt-3 flex flex-col gap-1.5 text-[11px] font-mono">
               <div className="flex justify-between text-muted">
+                <span>Current</span>
+                <span className="text-blue-300">
+                  {livePrice > 0 ? `$${smartFmt(livePrice)}` : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between text-muted">
                 <span>Entry</span>
-                <span className="text-text">{signal.entry != null && Number(signal.entry) > 0 ? `$${Number(signal.entry).toFixed(4)}` : "—"}</span>
+                <span className="text-text">
+                  {signal.entry != null && Number(signal.entry) > 0
+                    ? `$${smartFmt(Number(signal.entry))}`
+                    : "—"}
+                </span>
               </div>
               <div className="flex justify-between text-muted">
                 <span>TP</span>
-                <span className="text-success">{signal.tp != null && Number(signal.tp) > 0 ? `$${Number(signal.tp).toFixed(4)}` : "—"}</span>
+                <span className="text-success">
+                  {signal.tp != null && Number(signal.tp) > 0
+                    ? `$${smartFmt(Number(signal.tp))}`
+                    : "—"}
+                </span>
               </div>
               <div className="flex justify-between text-muted">
                 <span>SL</span>
-                <span className="text-danger">{signal.sl != null && Number(signal.sl) > 0 ? `$${Number(signal.sl).toFixed(4)}` : "—"}</span>
+                <span className="text-danger">
+                  {signal.sl != null && Number(signal.sl) > 0
+                    ? `$${smartFmt(Number(signal.sl))}`
+                    : "—"}
+                </span>
               </div>
               {signal.pnl_pct != null && (
                 <div className="flex justify-between text-muted">
