@@ -8,6 +8,7 @@ interface Props {
   signals:   Signal[];
   loading?:  boolean;
   leverage?: number;
+  entryUsdt?: number;
   allowForClosed?: boolean;  // true on history page
 }
 
@@ -55,7 +56,7 @@ function EntryStatus({ signal }: { signal: Signal }) {
 }
 
 // Mobile card view
-function SignalCard({ s, leverage, allowForClosed }: { s: Signal; leverage: number; allowForClosed?: boolean }) {
+function SignalCard({ s, leverage, entryUsdt, allowForClosed }: { s: Signal; leverage: number; entryUsdt?: number; allowForClosed?: boolean }) {
   return (
     <div className="px-4 py-3 border-b border-border/30 last:border-0">
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -109,7 +110,7 @@ function SignalCard({ s, leverage, allowForClosed }: { s: Signal; leverage: numb
         </div>
         <div className="flex items-center gap-2">
           {/* Poster button — only for in-trade signals on mobile */}
-          <PosterButton signal={s} leverage={leverage} allowForClosed={allowForClosed} />
+          <PosterButton signal={s} leverage={leverage} entryUsdt={entryUsdt} allowForClosed={allowForClosed} />
           <span>
             {new Date(s.timestamp).toLocaleString("en-US", {
               month: "2-digit", day: "2-digit",
@@ -136,7 +137,7 @@ const COLS = [
   { key: "poster",   label: "",         w: "w-20"  },  // ← new
 ];
 
-export default function SignalTable({ signals, loading, leverage = 10, allowForClosed = false }: Props) {
+export default function SignalTable({ signals, loading, leverage = 50, entryUsdt = 20, allowForClosed = false }: Props) {
   if (loading) {
     return (
       <div>
@@ -264,7 +265,7 @@ export default function SignalTable({ signals, loading, leverage = 10, allowForC
 
                 {/* ── POSTER BUTTON — only visible for in-trade rows ── */}
                 <td className="py-2.5 px-3">
-                  <PosterButton signal={s} leverage={leverage} allowForClosed={allowForClosed} />
+                  <PosterButton signal={s} leverage={leverage} entryUsdt={entryUsdt} allowForClosed={allowForClosed} />
                 </td>
               </tr>
             ))}
