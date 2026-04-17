@@ -61,7 +61,7 @@ export default function BalanceCard({
           <div className="hidden sm:block h-10 w-px bg-border" />
 
           {/* PnL USDT */}
-          <div className="hidden sm:block">
+          <div>
             <p className="text-[10px] sm:text-[11px] font-medium tracking-widest uppercase text-muted mb-1">
               Realized PnL
             </p>
@@ -87,40 +87,28 @@ export default function BalanceCard({
         </div>
 
         {/* Right — settings */}
-        <div className="flex items-center gap-3 sm:gap-4">
-          {/* Mobile PnL */}
-          <div className="sm:hidden flex flex-col">
-            <p className="text-[10px] uppercase tracking-widest text-muted">PnL</p>
-            {loading ? (
-              <div className="h-5 w-20 bg-border rounded animate-pulse" />
-            ) : (
-              <span className={clsx("text-sm font-semibold font-mono", isProfit ? "text-success" : "text-danger")}>
-                {isProfit ? "+" : ""}{pnlUsdt.toFixed(2)} USDT
-              </span>
-            )}
-          </div>
-
+        <div className="flex items-center gap-2 sm:gap-4 flex-wrap justify-end">
           {/* Leverage badge */}
           <div className="flex flex-col items-center">
-            <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Leverage</p>
-            <span className="px-2.5 py-1 rounded-lg bg-accent/10 border border-accent/20 text-accent text-sm font-mono font-semibold">
+            <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Lev</p>
+            <span className="px-2 py-1 rounded-lg bg-accent/10 border border-accent/20 text-accent text-xs font-mono font-semibold">
               {leverage}×
             </span>
           </div>
 
           {/* Entry size */}
           <div className="flex flex-col items-center">
-            <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Per Trade</p>
-            <span className="px-2.5 py-1 rounded-lg bg-border/60 text-subtle text-sm font-mono font-semibold">
-              {entryUsdt} USDT
+            <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Trade</p>
+            <span className="px-2 py-1 rounded-lg bg-border/60 text-subtle text-xs font-mono font-semibold">
+              {entryUsdt}$
             </span>
           </div>
 
           {/* Notional */}
           <div className="flex flex-col items-center">
             <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Notional</p>
-            <span className="px-2.5 py-1 rounded-lg bg-border/60 text-subtle text-sm font-mono font-semibold">
-              {(entryUsdt * leverage).toFixed(0)} USDT
+            <span className="px-2 py-1 rounded-lg bg-border/60 text-subtle text-xs font-mono font-semibold">
+              {(entryUsdt * leverage).toFixed(0)}$
             </span>
           </div>
         </div>
