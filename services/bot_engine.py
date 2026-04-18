@@ -1,20 +1,6 @@
 """
 PATCH: bot_engine.py
 ====================
-Apply these 3 changes to your existing bot_engine.py.
-
-────────────────────────────────────────────────────────────────────────────
-CHANGE 1 — Add import at the top (after the existing imports block)
-────────────────────────────────────────────────────────────────────────────
-
-Find this line (around line 34):
-    from services.mexc_price_feed  import price_feed          # ← WS price feed
-
-Add BELOW it:
-    from services.position_ai      import position_ai, MONITOR_INTERVAL
-
-Also add this constant below the other constants (around line 53):
-    TIMEFRAMES_MONITOR = ["5m", "15m", "1h", "4h"]   # TFs used for hold/close AI
 
 ────────────────────────────────────────────────────────────────────────────
 CHANGE 2 — Add shutdown() call for position_ai
