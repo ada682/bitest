@@ -415,116 +415,118 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
         }
 
         data = None
-        for attempt in range(2):
-            try:
-                print(f"{tag} 🔄 Qwen request [{QWEN_MODEL}] for {symbol} (attempt {attempt + 1})")
-                resp = await self.client.post(
-                    CHAT_URL,
-                    headers={
-                        "Authorization": f"Bearer {self.token}",
-                        "Content-Type":  "application/json",
-                    },
-                    json=payload,
-                    timeout=180,
-                )
+        lock = ai_lock()
+        async with lock:
+            for attempt in range(2):
+                try:
+                    print(f"{tag} 🔄 Qwen request [{QWEN_MODEL}] for {symbol} (attempt {attempt + 1})")
+                    resp = await self.client.post(
+                        CHAT_URL,
+                        headers={
+                            "Authorization": f"Bearer {self.token}",
+                            "Content-Type":  "application/json",
+                        },
+                        json=payload,
+                        timeout=180,
+                    )
 
-                if resp.status_code == 401:
-                    logger.warning(f"{tag} 401 Unauthorized for {symbol} — trying token refresh")
-                    print(f"{tag} 🔑 Token expired — refreshing...")
-                    if attempt == 0 and await self._refresh():
+                    if resp.status_code == 401:
+                        logger.warning(f"{tag} 401 Unauthorized for {symbol} — trying token refresh")
+                        print(f"{tag} 🔑 Token expired — refreshing...")
+                        if attempt == 0 and await self._refresh():
                         # update header and retry
-                        continue
-                    return self._no_trade("Auth failed (401) even after refresh")
+                            continue
+                        return self._no_trade("Auth failed (401) even after refresh")
 
-                if resp.status_code == 429:
-                    logger.warning(f"{tag} 429 Rate-limited for {symbol}")
-                    return self._no_trade("Rate limited (429) — try again later")
+                    if resp.status_code == 429:
+                        logger.warning(f"{tag} 429 Rate-limited for {symbol}")
+                        return self._no_trade("Rate limited (429) — try again later")
 
-                if resp.status_code != 200:
-                    logger.error(f"{tag} HTTP {resp.status_code} for {symbol}: {resp.text[:400]}")
-                    return self._no_trade(f"HTTP {resp.status_code}")
+                    if resp.status_code != 200:
+                        logger.error(f"{tag} HTTP {resp.status_code} for {symbol}: {resp.text[:400]}")
+                        return self._no_trade(f"HTTP {resp.status_code}")
 
-                data = resp.json()
-                break   # ← success, exit retry loop
+                    data = resp.json()
+                    break   # ← success, exit retry loop
 
-            except httpx.TimeoutException:
-                logger.error(f"{tag} Timeout for {symbol}")
-                return self._no_trade("Request timeout (180s)")
-            except Exception as e:
-                logger.error(f"{tag} Request exception for {symbol}: {e}", exc_info=True)
-                return self._no_trade(f"Request error: {e}")
+                except httpx.TimeoutException:
+                    logger.error(f"{tag} Timeout for {symbol}")
+                    return self._no_trade("Request timeout (180s)")
+                except Exception as e:
+                    logger.error(f"{tag} Request exception for {symbol}: {e}", exc_info=True)
+                    return self._no_trade(f"Request error: {e}")
 
-        if data is None:
-            return self._no_trade("No response after retries")
+            if data is None:
+                return self._no_trade("No response after retries")
 
         # ── 5. Extract response text ──────────────────────────────────
-        try:
-            full_text = (
-                data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                or ""
-            )
-            # Some implementations put thinking in a separate field
-            if not full_text:
+            try:
                 full_text = (
                     data.get("choices", [{}])[0]
                         .get("message", {})
-                        .get("reasoning_content", "")
+                        .get("content", "")
                     or ""
                 )
-        except Exception:
-            return self._no_trade("Failed to extract response content")
+            # Some implementations put thinking in a separate field
+                if not full_text:
+                    full_text = (
+                        data.get("choices", [{}])[0]
+                            .get("message", {})
+                            .get("reasoning_content", "")
+                        or ""
+                    )
+            except Exception:
+                return self._no_trade("Failed to extract response content")
 
-        logger.info(f"{tag} Raw response for {symbol} ({len(full_text)} chars):\n{full_text[:600]}")
-        print(f"{tag} RAW [{symbol}]: {full_text[:400]}")
+            logger.info(f"{tag} Raw response for {symbol} ({len(full_text)} chars):\n{full_text[:600]}")
+            print(f"{tag} RAW [{symbol}]: {full_text[:400]}")
 
-        if not full_text.strip():
+            if not full_text.strip():
             return self._no_trade("Empty AI response")
 
         # ── 6. Parse JSON from response ───────────────────────────────
-        start = full_text.find("{")
-        end   = full_text.rfind("}") + 1
+            start = full_text.find("{")
+            end   = full_text.rfind("}") + 1
 
-        if start < 0 or end <= start:
-            logger.error(f"{tag} No JSON found for {symbol}. Response: {full_text[:500]}")
-            return self._no_trade("No JSON in AI response")
+            if start < 0 or end <= start:
+                logger.error(f"{tag} No JSON found for {symbol}. Response: {full_text[:500]}")
+                return self._no_trade("No JSON in AI response")
 
-        json_str = full_text[start:end]
-        try:
-            result = json.loads(json_str)
-        except json.JSONDecodeError as je:
-            logger.error(f"{tag} JSON decode error for {symbol}: {je}")
-            return self._no_trade(f"JSON parse error: {je}")
+            json_str = full_text[start:end]
+            try:
+                result = json.loads(json_str)
+            except json.JSONDecodeError as je:
+                logger.error(f"{tag} JSON decode error for {symbol}: {je}")
+                return self._no_trade(f"JSON parse error: {je}")
 
-        decision = result.get("decision", "NO TRADE").upper().strip()
-        if decision not in ("LONG", "SHORT", "NO TRADE"):
-            logger.warning(f"{tag} Unexpected decision '{decision}' for {symbol} — forcing NO TRADE")
-            decision = "NO TRADE"
+            decision = result.get("decision", "NO TRADE").upper().strip()
+            if decision not in ("LONG", "SHORT", "NO TRADE"):
+                logger.warning(f"{tag} Unexpected decision '{decision}' for {symbol} — forcing NO TRADE")
+                decision = "NO TRADE"
 
-        parsed = {
-            "trend":        result.get("trend", "SIDEWAYS"),
-            "pattern":      result.get("pattern", ""),
-            "decision":     decision,
-            "entry":        result.get("entry"),
-            "tp":           result.get("tp"),
-            "sl":           result.get("sl"),
-            "invalidation": result.get("invalidation"),
-            "reason":       result.get("reason", ""),
-            "confidence":   int(result.get("confidence", 0)),
-        }
+            parsed = {
+                "trend":        result.get("trend", "SIDEWAYS"),
+                "pattern":      result.get("pattern", ""),
+                "decision":     decision,
+                "entry":        result.get("entry"),
+                "tp":           result.get("tp"),
+                "sl":           result.get("sl"),
+                "invalidation": result.get("invalidation"),
+                "reason":       result.get("reason", ""),
+                "confidence":   int(result.get("confidence", 0)),
+            }
 
-        print(
-            f"{tag} ✅ {symbol} → {decision} "
-            f"entry={parsed['entry']} conf={parsed['confidence']}%"
-        )
-        logger.info(
-            f"{tag} Signal parsed for {symbol}: "
-            f"decision={decision} entry={parsed['entry']} confidence={parsed['confidence']}"
-        )
-        return parsed
+            print(
+                f"{tag} ✅ {symbol} → {decision} "
+                f"entry={parsed['entry']} conf={parsed['confidence']}%"
+            )
+            logger.info(
+                f"{tag} Signal parsed for {symbol}: "
+                f"decision={decision} entry={parsed['entry']} confidence={parsed['confidence']}"
+            )
+            return parsed
 
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
 
     def _no_trade(self, reason: str) -> dict:
         logger.warning(f"{self._tag} NO TRADE — {reason}")
