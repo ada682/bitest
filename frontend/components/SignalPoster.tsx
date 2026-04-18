@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { Signal } from "@/lib/types";
+import QRCode from "qrcode";
 
 // ─── THEMES ──────────────────────────────────────────────────────────────────
 const T_VIOLET = {
@@ -208,6 +209,7 @@ function drawPoster(
   website = "sonnetrades.vercel.app",
   dpr = 1,
   candles: number[][] = [],
+  qrImg: HTMLImageElement | null = null,
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -781,7 +783,19 @@ function drawPoster(
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
   ctx.fillText(urlText, chipX + chipPad + globeIconW + 4, chipY + chipH / 2);
 
-  drawQR(ctx, W - 74, botY + 12, 56, T.a1);
+  // ── QR Code (real, scannable → website URL) ──────────────────────────────
+  const qrX = W - 74, qrY = botY + 12, qrSize = 56;
+  if (qrImg) {
+    // Real QR: draw with slight opacity tint matching theme
+    ctx.save();
+    ctx.globalAlpha = 0.75;
+    ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  } else {
+    // Fallback: decorative placeholder while QR loads
+    drawQR(ctx, qrX, qrY, qrSize, T.a1);
+  }
 
   const botStrip = ctx.createLinearGradient(0, 0, W, 0);
   botStrip.addColorStop(0, "transparent"); botStrip.addColorStop(0.2, T.a1);
@@ -843,6 +857,25 @@ function PosterModal({
 
   const isClosed = signal.status === "CLOSED" || signal.status === "INVALIDATED";
   const sym      = signal.symbol; // e.g. "BTC_USDT"
+
+  // ── QR Code: generate real scannable QR from website URL ─────────────────
+  const [qrImg, setQrImg] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const url = "https://sonnetrades.vercel.app";
+    QRCode.toDataURL(url, {
+      width: 112,       // 2× render size for HD sharpness
+      margin: 1,
+      color: {
+        dark:  "#ffffff",   // white modules — tinted to theme via globalAlpha in drawPoster
+        light: "#00000000", // transparent background so poster bg shows through
+      },
+    }).then((dataUrl) => {
+      const img = new window.Image();
+      img.onload = () => setQrImg(img);
+      img.src = dataUrl;
+    }).catch(() => { /* silently fall back to decorative QR */ });
+  }, []);
 
   // ── Candle data for price chart ───────────────────────────────────────────
   const [candles, setCandles] = useState<number[][]>([]);
@@ -973,20 +1006,20 @@ function PosterModal({
   // ── Canvas redraw whenever any input changes ──────────────────────────────
   useEffect(() => {
     if (!canvasRef.current) return;
-    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 1, candles);
-  }, [signal, mode, roeVal, pnlVal, leverage, livePrice, candles]);
+    drawPoster(canvasRef.current, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 1, candles, qrImg);
+  }, [signal, mode, roeVal, pnlVal, leverage, livePrice, candles, qrImg]);
 
   // ── HD export blob ────────────────────────────────────────────────────────
   const getHDBlob = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const hd = document.createElement("canvas");
-      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 2, candles);
+      drawPoster(hd, signal, mode, roeVal, pnlVal, leverage, livePrice, undefined, undefined, 2, candles, qrImg);
       hd.toBlob((blob) => {
         if (blob) resolve(blob);
         else reject(new Error("Canvas to Blob failed"));
       }, "image/png");
     });
-  }, [signal, mode, roeVal, pnlVal, leverage, livePrice, candles]);
+  }, [signal, mode, roeVal, pnlVal, leverage, livePrice, candles, qrImg]);
 
   const handleSave = useCallback(async () => {
     const blob = await getHDBlob();
@@ -1054,9 +1087,9 @@ function PosterModal({
                         : "border-border text-muted hover:text-text hover:border-border/80"
                     }`}
                   >
-                    {m === "roe"  && "ROE only"}
-                    {m === "pnl"  && "PnL only"}
-                    {m === "both" && "ROE + PnL"}
+                    {m === "roe"  && "📊 ROE only"}
+                    {m === "pnl"  && "💰 PnL only"}
+                    {m === "both" && "✨ ROE + PnL"}
                   </button>
                 ))}
               </div>
