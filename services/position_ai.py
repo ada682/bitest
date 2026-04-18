@@ -67,25 +67,46 @@ CRITICAL TIME AWARENESS:
 - Price naturally moves against a new position briefly before reaching TP — do NOT mistake normal
   volatility for thesis invalidation.
 
-CLOSE if:
+You have THREE possible decisions:
+
+━━━ CLOSE ━━━
+Use when:
 - The original thesis (trend/pattern/void/structure) has been clearly invalidated by NEW candle data
 - Clear reversal structure has formed AFTER entry (lower low for LONG / higher high for SHORT)
 - The specific pattern or level cited in the original analysis has broken
 - Momentum has definitively shifted with no recovery sign over multiple candles
 - Risk/reward no longer justifies holding — better a small loss now than full SL
 
-HOLD if:
+━━━ SL+ (Move Stop Loss) ━━━
+Use when the position is in PROFIT and you want to lock in gains or protect break-even:
+- Price has moved significantly in our favour (ideally ≥ 50% of the way to TP)
+- The original thesis is still intact and TP is still the target
+- You want to trail the SL closer to current price to lock profit but NOT close yet
+- Classic use cases:
+    • Move SL to break-even (entry price) once trade is in profit
+    • Trail SL behind a recent swing low/high to lock partial gains
+- When choosing SL+, you MUST provide a new_sl price:
+    • For LONG:  new_sl must be ABOVE the current SL but BELOW current price (never above entry is fine too)
+    • For SHORT: new_sl must be BELOW the current SL but ABOVE current price
+- Do NOT use SL+ if the position is still at a loss — use HOLD or CLOSE instead.
+- Do NOT move SL+ so tight that normal volatility would immediately stop it out.
+
+━━━ HOLD ━━━
+Use when:
 - The original analysis thesis is still intact
 - Price is in normal pullback/consolidation within the trade direction
 - TP is still reachable from current price structure
 - The position was opened recently and no structural invalidation has occurred yet
 - Original void/pattern/level hasn't been violated
+- Trade is at a loss but thesis isn't broken — ride it out
 
 Rules:
 - Respond with EXACTLY this JSON and nothing else:
-  {"decision": "HOLD" or "CLOSE", "reason": "max 120 chars"}
+  {"decision": "HOLD" or "CLOSE" or "SL+", "reason": "max 120 chars", "new_sl": <price or null>}
+- "new_sl" is REQUIRED when decision is "SL+" — it must be a number (the new stop-loss price)
+- "new_sl" must be null for HOLD and CLOSE decisions
 - No markdown, no preamble, no extra text outside the JSON
-- decision must be exactly "HOLD" or "CLOSE"
+- decision must be exactly "HOLD", "CLOSE", or "SL+"
 """
 
 
@@ -160,6 +181,7 @@ class PositionAIClient:
         opened_at:             Optional[int] = None,   # ms timestamp when position was opened
         original_prompt:       Optional[str] = None,   # the raw prompt sent to analysis AI
         original_ai_response:  Optional[str] = None,   # the raw response from analysis AI
+        sl_plus_history:       Optional[list] = None,  # list of previous SL+ moves [{from, to, price, at}]
     ) -> Optional[dict]:
         if direction == "LONG":
             pnl_pct   = round((current_price - entry) / entry * 100, 3)
@@ -223,6 +245,34 @@ class PositionAIClient:
             parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
             conversation_block = "\n".join(parts)
 
+        # ── Build SL+ history block ────────────────────────────────────
+        sl_plus_block = ""
+        if sl_plus_history:
+            lines = ["\n━━━ SL+ HISTORY (previous stop-loss moves by YOU) ━━━"]
+            original_sl = None
+            for i, move in enumerate(sl_plus_history):
+                frm   = move.get("from")
+                to    = move.get("to")
+                px    = move.get("price")
+                at_ms = move.get("at")
+                at_str = _fmt_ts(at_ms) if at_ms else "unknown"
+                if i == 0:
+                    original_sl = frm
+                lines.append(
+                    f"  Move #{i+1}: SL {frm} → {to}  "
+                    f"(price was {px} at {at_str})"
+                )
+            lines.append(
+                f"  Original SL: {original_sl}   Current SL (after all moves): {sl}"
+            )
+            lines.append(
+                "  NOTE: The current Stop Loss shown below already reflects these moves.\n"
+                "  If you choose SL+ again, provide a new_sl that is BETTER than the current SL.\n"
+                "  Do NOT move SL back toward the original — only tighten further or stay put."
+            )
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+            sl_plus_block = "\n".join(lines)
+
         # ── Build OHLCV blocks ─────────────────────────────────────────
         ohlcv_blocks = []
         for tf, candles in candles_by_tf.items():
@@ -234,10 +284,11 @@ class PositionAIClient:
             ohlcv_blocks.append("\n".join(lines))
 
         user_text = (
-            f"ACTIVE POSITION — HOLD or CLOSE?\n"
+            f"ACTIVE POSITION — HOLD, CLOSE, or SL+?\n"
             f"{time_block}"
             f"{orig_block}"
             f"{conversation_block}\n"
+            f"{sl_plus_block}"
             f"━━━ CURRENT POSITION STATUS ━━━\n"
             f"  Symbol:         {symbol}\n"
             f"  Direction:      {direction}\n"
@@ -253,7 +304,8 @@ class PositionAIClient:
             f"Charts attached above.\n"
             f"Remember: this position was opened {elapsed_str}. "
             f"Judge whether the ORIGINAL THESIS is still valid — not just current price.\n"
-            f'Respond ONLY with JSON: {{"decision": "HOLD" or "CLOSE", "reason": "brief reason"}}'
+            f'Respond ONLY with JSON: {{"decision": "HOLD"|"CLOSE"|"SL+", "reason": "brief reason", "new_sl": <price or null>}}\n'
+            f'For SL+: provide new_sl as a number (new stop-loss price). For HOLD/CLOSE: new_sl must be null.'
         )
 
         content = []
@@ -339,13 +391,38 @@ class PositionAIClient:
             return None
 
         decision = str(result.get("decision", "")).upper().strip()
-        if decision not in ("HOLD", "CLOSE"):
+        # Normalise variations like "SL+" / "SL +" / "SL_PLUS"
+        if decision in ("SL +", "SL_PLUS", "SLPLUS", "SL PLUS"):
+            decision = "SL+"
+        if decision not in ("HOLD", "CLOSE", "SL+"):
             logger.warning(f"[PositionAI] invalid decision '{decision}' for {symbol}")
             return None
 
         reason = str(result.get("reason", ""))[:200]
-        print(f"[PositionAI] {symbol} → {decision} | {reason}")
-        return {"decision": decision, "reason": reason}
+
+        # Extract and validate new_sl for SL+ decisions
+        new_sl = None
+        if decision == "SL+":
+            raw_sl = result.get("new_sl")
+            try:
+                new_sl = float(raw_sl)
+                if new_sl <= 0:
+                    logger.warning(f"[PositionAI] SL+ new_sl={raw_sl} invalid (≤0) — downgrading to HOLD")
+                    return {"decision": "HOLD", "reason": "SL+ had invalid new_sl, holding instead"}
+                # Sanity check: for LONG new_sl must be < current_price;
+                # for SHORT new_sl must be > current_price
+                if direction == "LONG" and new_sl >= current_price:
+                    logger.warning(f"[PositionAI] SL+ new_sl={new_sl} >= price={current_price} for LONG — rejected")
+                    return {"decision": "HOLD", "reason": "SL+ new_sl above price for LONG, holding instead"}
+                if direction == "SHORT" and new_sl <= current_price:
+                    logger.warning(f"[PositionAI] SL+ new_sl={new_sl} <= price={current_price} for SHORT — rejected")
+                    return {"decision": "HOLD", "reason": "SL+ new_sl below price for SHORT, holding instead"}
+            except (TypeError, ValueError):
+                logger.warning(f"[PositionAI] SL+ missing/invalid new_sl={raw_sl!r} — downgrading to HOLD")
+                return {"decision": "HOLD", "reason": "SL+ had no valid new_sl, holding instead"}
+
+        print(f"[PositionAI] {symbol} → {decision} | {reason}" + (f" | new_sl={new_sl}" if new_sl else ""))
+        return {"decision": decision, "reason": reason, "new_sl": new_sl}
 
     async def close(self):
         await self.client.aclose()
@@ -376,9 +453,10 @@ class PositionMonitorAI:
         opened_at:             Optional[int] = None,   # ← NEW: ms timestamp
         original_prompt:       Optional[str] = None,   # ← NEW: prompt sent to analysis AI
         original_ai_response:  Optional[str] = None,   # ← NEW: analysis AI's response text
+        sl_plus_history:       Optional[list] = None,  # ← NEW: list of previous SL+ moves
         max_retries:           int  = 999,
     ) -> dict:
-        """Retry sampai dapat HOLD/CLOSE. Backoff 10s → 30s."""
+        """Retry sampai dapat HOLD/CLOSE/SL+. Backoff 10s → 30s."""
         if not self._client:
             return {"decision": "HOLD", "reason": "No token configured"}
 
@@ -397,8 +475,9 @@ class PositionMonitorAI:
                 opened_at=opened_at,
                 original_prompt=original_prompt,
                 original_ai_response=original_ai_response,
+                sl_plus_history=sl_plus_history,
             )
-            if result and result.get("decision") in ("HOLD", "CLOSE"):
+            if result and result.get("decision") in ("HOLD", "CLOSE", "SL+"):
                 return result
 
             wait = min(10 * (attempt + 1), 30)
