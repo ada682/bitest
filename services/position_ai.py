@@ -48,22 +48,25 @@ else:
 POSITION_SYSTEM_PROMPT = """You are a position management AI for a crypto futures trading bot.
 
 An ACTIVE OPEN POSITION is running — entry price has already been hit.
-Your only job: decide HOLD or CLOSE right now.
+The ORIGINAL OPEN ANALYSIS that triggered this trade will be provided to you.
+Your job: using BOTH the original thesis AND the latest candle data, decide HOLD or CLOSE right now.
 
 CLOSE if:
-- Clear reversal against the position direction
+- The original thesis (trend/pattern/void) has been invalidated
+- Clear reversal structure against position direction
 - Key structure broken (lower low for LONG / higher high for SHORT)
-- Momentum fading with no recovery
-- Better to take small loss now than wait for full SL
+- Momentum fading with no recovery sign
+- Risk/reward no longer justifies holding — better a small loss now than full SL
 
 HOLD if:
-- Trend still supports original thesis
-- Normal pullback within trade direction
-- TP still reachable from current structure
+- Trend and structure still support the original thesis
+- Normal pullback/consolidation within trade direction
+- TP still reachable from current price structure
+- Original void/pattern hasn't been violated
 
 Rules:
 - Respond with EXACTLY this JSON and nothing else:
-  {"decision": "HOLD" or "CLOSE", "reason": "max 100 chars"}
+  {"decision": "HOLD" or "CLOSE", "reason": "max 120 chars"}
 - No markdown, no preamble, no extra text outside the JSON
 - decision must be exactly "HOLD" or "CLOSE"
 """
@@ -98,27 +101,45 @@ class PositionAIClient:
 
     async def decide(
         self,
-        symbol:        str,
-        direction:     str,
-        entry:         float,
-        tp:            float,
-        sl:            float,
-        current_price: float,
-        candles_by_tf: dict,
-        leverage:      int,
-        margin_usdt:   float,
+        symbol:            str,
+        direction:         str,
+        entry:             float,
+        tp:                float,
+        sl:                float,
+        current_price:     float,
+        candles_by_tf:     dict,
+        leverage:          int,
+        margin_usdt:       float,
+        original_analysis: dict = None,   # ← NEW: original open-trade AI analysis
     ) -> Optional[dict]:
         if direction == "LONG":
-            pnl_pct  = round((current_price - entry) / entry * 100, 3)
+            pnl_pct   = round((current_price - entry) / entry * 100, 3)
             pct_to_tp = round((tp - current_price) / current_price * 100, 3)
             pct_to_sl = round((current_price - sl) / current_price * 100, 3)
         else:
-            pnl_pct  = round((entry - current_price) / entry * 100, 3)
+            pnl_pct   = round((entry - current_price) / entry * 100, 3)
             pct_to_tp = round((current_price - tp) / current_price * 100, 3)
             pct_to_sl = round((sl - current_price) / current_price * 100, 3)
 
         pnl_usdt = round(margin_usdt * leverage * pnl_pct / 100, 4)
         sign     = "+" if pnl_pct >= 0 else ""
+        pnl_icon = "🟢" if pnl_pct >= 0 else "🔴"
+
+        # ── Build original analysis block ─────────────────────────────
+        orig_block = ""
+        if original_analysis:
+            orig_trend  = original_analysis.get("trend",      "N/A")
+            orig_pat    = original_analysis.get("pattern",    "N/A")
+            orig_reason = original_analysis.get("reason",     "N/A")
+            orig_conf   = original_analysis.get("confidence", "N/A")
+            orig_block = (
+                f"\n━━━ ORIGINAL OPEN ANALYSIS ━━━\n"
+                f"  Trend:      {orig_trend}\n"
+                f"  Pattern:    {orig_pat}\n"
+                f"  Confidence: {orig_conf}%\n"
+                f"  Reason:     {orig_reason}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
 
         ohlcv_blocks = []
         for tf, candles in candles_by_tf.items():
@@ -130,19 +151,22 @@ class PositionAIClient:
             ohlcv_blocks.append("\n".join(lines))
 
         user_text = (
-            f"ACTIVE POSITION — HOLD or CLOSE?\n\n"
-            f"Symbol:         {symbol}\n"
-            f"Direction:      {direction}\n"
-            f"Entry:          {entry}\n"
-            f"Current Price:  {current_price}\n"
-            f"Take Profit:    {tp}  ({pct_to_tp:+.3f}% away)\n"
-            f"Stop Loss:      {sl}  (-{pct_to_sl:.3f}% away)\n"
-            f"Unrealized PnL: {sign}{pnl_pct}% ({sign}{pnl_usdt} USDT)\n"
-            f"Leverage:       {leverage}x\n"
-            f"Margin Used:    {margin_usdt} USDT\n\n"
+            f"ACTIVE POSITION — HOLD or CLOSE?\n"
+            f"{orig_block}\n"
+            f"━━━ POSITION STATUS ━━━\n"
+            f"  Symbol:         {symbol}\n"
+            f"  Direction:      {direction}\n"
+            f"  Entry:          {entry}\n"
+            f"  Current Price:  {current_price}\n"
+            f"  Take Profit:    {tp}  ({pct_to_tp:+.3f}% away)\n"
+            f"  Stop Loss:      {sl}  (-{pct_to_sl:.3f}% away)\n"
+            f"  {pnl_icon} Unrealized PnL: {sign}{pnl_pct}%  ({sign}{pnl_usdt} USDT)\n"
+            f"  Leverage:       {leverage}x\n"
+            f"  Margin Used:    {margin_usdt} USDT\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{chr(10).join(ohlcv_blocks)}\n\n"
-            f'Charts attached above. Respond ONLY with JSON:\n'
-            f'{{"decision": "HOLD" or "CLOSE", "reason": "brief reason"}}'
+            f"Charts attached above. Does the original thesis still hold?\n"
+            f'Respond ONLY with JSON: {{"decision": "HOLD" or "CLOSE", "reason": "brief reason"}}'
         )
 
         content = []
@@ -252,16 +276,17 @@ class PositionMonitorAI:
 
     async def decide_with_retry(
         self,
-        symbol:        str,
-        direction:     str,
-        entry:         float,
-        tp:            float,
-        sl:            float,
-        current_price: float,
-        candles_by_tf: dict,
-        leverage:      int,
-        margin_usdt:   float,
-        max_retries:   int = 999,
+        symbol:            str,
+        direction:         str,
+        entry:             float,
+        tp:                float,
+        sl:                float,
+        current_price:     float,
+        candles_by_tf:     dict,
+        leverage:          int,
+        margin_usdt:       float,
+        original_analysis: dict = None,   # ← NEW
+        max_retries:       int  = 999,
     ) -> dict:
         """Retry sampai dapat HOLD/CLOSE. Backoff 10s → 30s."""
         if not self._client:
@@ -273,6 +298,7 @@ class PositionMonitorAI:
                 tp=tp, sl=sl, current_price=current_price,
                 candles_by_tf=candles_by_tf,
                 leverage=leverage, margin_usdt=margin_usdt,
+                original_analysis=original_analysis,
             )
             if result and result.get("decision") in ("HOLD", "CLOSE"):
                 return result
