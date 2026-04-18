@@ -708,6 +708,7 @@ class BotEngine:
                         leverage           = virtual_exchange.leverage,
                         margin_usdt        = virtual_exchange.entry_usdt,
                         original_analysis  = original_analysis,
+                        sl_plus_history    = signal.get("sl_plus_history") or [],
                     )
 
                     signal["last_ai_decision"] = ai_result.get("decision")
@@ -719,10 +720,59 @@ class BotEngine:
                         "symbol":    symbol,
                         "decision":  ai_result.get("decision"),
                         "reason":    ai_result.get("reason"),
+                        "new_sl":    ai_result.get("new_sl"),
                         "timestamp": int(time.time() * 1000),
                     })
 
-                    if ai_result.get("decision") == "CLOSE":
+                    # ── SL+ — move stop loss to lock profit ────────────
+                    if ai_result.get("decision") == "SL+":
+                        new_sl = ai_result.get("new_sl")
+                        if new_sl and float(new_sl) > 0:
+                            old_sl = sl_f
+                            new_sl_f = float(new_sl)
+
+                            # Extra guard: must improve the SL (closer to price)
+                            sl_improves = (
+                                (direction == "LONG"  and new_sl_f > old_sl) or
+                                (direction == "SHORT" and new_sl_f < old_sl)
+                            )
+                            if sl_improves:
+                                sl_f              = new_sl_f
+                                signal["sl"]      = new_sl_f
+                                signal["sl_plus_count"] = signal.get("sl_plus_count", 0) + 1
+                                signal["sl_plus_history"] = signal.get("sl_plus_history", [])
+                                signal["sl_plus_history"].append({
+                                    "from":  old_sl,
+                                    "to":    new_sl_f,
+                                    "price": price,
+                                    "at":    int(time.time() * 1000),
+                                })
+                                _save_signals(self.state["signals"])
+                                self._emit("signal_sl_updated", {
+                                    "id":        sig_id,
+                                    "symbol":    symbol,
+                                    "direction": direction,
+                                    "old_sl":    old_sl,
+                                    "new_sl":    new_sl_f,
+                                    "price":     price,
+                                    "reason":    ai_result.get("reason"),
+                                    "timestamp": int(time.time() * 1000),
+                                })
+                                print(
+                                    f"  🛡️  {sig_id} SL+ | {direction} "
+                                    f"SL moved {old_sl} → {new_sl_f} "
+                                    f"(price={price}) | {ai_result.get('reason')}"
+                                )
+                            else:
+                                print(
+                                    f"  ⚠️  {sig_id} SL+ rejected — "
+                                    f"new_sl={new_sl_f} doesn't improve current sl={old_sl} "
+                                    f"for {direction}"
+                                )
+                        else:
+                            print(f"  ⚠️  {sig_id} SL+ had no valid new_sl — ignoring")
+
+                    elif ai_result.get("decision") == "CLOSE":
                         pnl_pct = round(
                             (price - entry) / entry * 100 if direction == "LONG"
                             else (entry - price) / entry * 100, 4
