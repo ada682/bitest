@@ -34,7 +34,14 @@ function PnlCell({ pnl, usdt }: { pnl: number | null | undefined; usdt?: number 
   );
 }
 
-function EntryStatus({ signal }: { signal: Signal }) {
+function SlPlusBadge({ count }: { count?: number }) {
+  if (!count || count === 0) return null;
+  return (
+    <span className="inline-flex items-center gap-0.5 text-[9px] font-mono font-medium uppercase tracking-wide text-emerald-400/90 border border-emerald-400/30 rounded px-1 py-0.5 bg-emerald-400/5">
+      🛡 SL+{count > 1 ? ` ×${count}` : ""}
+    </span>
+  );
+}
   if (signal.status === "CLOSED")      return null;
   if (signal.status === "INVALIDATED") return null;
   if (signal.status === "NO TRADE")    return null;
@@ -110,6 +117,7 @@ function SignalCard({ s, leverage, entryUsdt, allowForClosed }: { s: Signal; lev
             {s.status}
           </span>
           <EntryStatus signal={s} />
+          <SlPlusBadge count={s.sl_plus_count} />
           {s.confidence != null ? (
             <span className="text-muted/50">{s.confidence}% conf</span>
           ) : null}
@@ -247,6 +255,7 @@ export default function SignalTable({ signals, loading, leverage = 50, entryUsdt
                       {s.status}
                     </span>
                     <EntryStatus signal={s} />
+                    <SlPlusBadge count={s.sl_plus_count} />
                     {s.status === "CLOSED" && s.closed_price != null && (
                       <span className="text-[9px] font-mono text-muted/50">
                         @ ${fmt(s.closed_price, 6)}
