@@ -436,7 +436,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                         logger.warning(f"{tag} 401 Unauthorized for {symbol} — trying token refresh")
                         print(f"{tag} 🔑 Token expired — refreshing...")
                         if attempt == 0 and await self._refresh():
-                        # update header and retry
+                            # update header and retry
                             continue
                         return self._no_trade("Auth failed (401) even after refresh")
 
@@ -484,7 +484,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
             print(f"{tag} RAW [{symbol}]: {full_text[:400]}")
 
             if not full_text.strip():
-            return self._no_trade("Empty AI response")
+                return self._no_trade("Empty AI response")
 
         # ── 6. Parse JSON from response ───────────────────────────────
             start = full_text.find("{")
