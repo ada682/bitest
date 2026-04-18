@@ -562,9 +562,9 @@ function drawPoster(
   const pts = prices.map((v, i) => ({ x: toXC(i), y: toY2(v) }));
   const liveY = _cur2 && _cur2 > 0 ? toY2(_cur2) : pts[pts.length - 1].y;
 
-  function smoothPath(points: {x:number;y:number}[], tension = 0.35) {
+  function smoothPath(c: CanvasRenderingContext2D, points: {x:number;y:number}[], tension = 0.35) {
     // Draw a smooth cubic bezier through all points using cardinal spline
-    ctx.moveTo(points[0].x, points[0].y);
+    c.moveTo(points[0].x, points[0].y);
     for (let i = 0; i < points.length - 1; i++) {
       const p0 = points[Math.max(i - 1, 0)];
       const p1 = points[i];
@@ -574,7 +574,7 @@ function drawPoster(
       const cp1y = p1.y + (p2.y - p0.y) * tension;
       const cp2x = p2.x - (p3.x - p1.x) * tension;
       const cp2y = p2.y - (p3.y - p1.y) * tension;
-      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+      c.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
     }
   }
 
@@ -645,7 +645,7 @@ function drawPoster(
   areaGrad.addColorStop(1, "transparent");
 
   ctx.beginPath();
-  smoothPath(pts);
+  smoothPath(ctx, pts);
   // Extend to live price, then close path along bottom
   ctx.lineTo(nowX, liveY);
   ctx.lineTo(nowX, arcY + chH - 4);
@@ -657,12 +657,12 @@ function drawPoster(
   // Draw the glow pass first (wider, blurred), then the crisp line on top
   ctx.save();
   ctx.shadowColor = T.a1; ctx.shadowBlur = 8;
-  ctx.beginPath(); smoothPath(pts);
+  ctx.beginPath(); smoothPath(ctx, pts);
   ctx.strokeStyle = h2r(T.a1, 0.35); ctx.lineWidth = 4;
   ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
   ctx.restore();
 
-  ctx.beginPath(); smoothPath(pts);
+  ctx.beginPath(); smoothPath(ctx, pts);
   ctx.strokeStyle = T.a1; ctx.lineWidth = 1.8;
   ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
 
