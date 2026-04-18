@@ -131,14 +131,44 @@ export default function DashboardClient() {
       }));
     }
 
-    // Signal closed (TP or SL)
+    // SL moved by AI (SL+) — update sl in matching signal
+    if (msg.event === "signal_sl_updated") {
+      const { id, new_sl } = msg.data as { id: string; new_sl: number; old_sl: number; reason: string };
+      setState((prev) => ({
+        ...prev,
+        signals: (prev.signals ?? []).map((s) =>
+          s.id === id
+            ? { ...s, sl: new_sl, sl_plus_count: (s.sl_plus_count ?? 0) + 1 }
+            : s
+        ),
+      }));
+    }
+
+    // AI hold/close/sl+ decision update
+    if (msg.event === "signal_ai_update") {
+      const { id, decision, reason, new_sl } =
+        msg.data as { id: string; decision: string; reason: string; new_sl?: number | null };
+      setState((prev) => ({
+        ...prev,
+        signals: (prev.signals ?? []).map((s) =>
+          s.id === id
+            ? { ...s, last_ai_decision: decision, last_ai_reason: reason }
+            : s
+        ),
+      }));
+    }
+
+    // Signal closed (TP / SL / AI_CLOSE)
     if (msg.event === "signal_closed") {
       const closed = msg.data as Signal & { balance?: number };
 
       setState((prev) => {
         const signals = (prev.signals ?? []).filter((s) => s.id !== closed.id);
-        const wins    = (prev.win_count  ?? 0) + (closed.result === "TP" ? 1 : 0);
-        const losses  = (prev.loss_count ?? 0) + (closed.result === "SL" ? 1 : 0);
+        // Count wins: TP hit OR AI_CLOSE in profit; losses: SL hit OR AI_CLOSE at loss
+        const isWin  = closed.result === "TP" || (closed.result === "AI_CLOSE" && (closed.pnl_pct ?? 0) >= 0);
+        const isLoss = closed.result === "SL" || (closed.result === "AI_CLOSE" && (closed.pnl_pct ?? 0) <  0);
+        const wins    = (prev.win_count  ?? 0) + (isWin  ? 1 : 0);
+        const losses  = (prev.loss_count ?? 0) + (isLoss ? 1 : 0);
         const total   = wins + losses;
         return {
           ...prev,
