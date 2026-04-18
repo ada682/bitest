@@ -79,7 +79,7 @@ Use when:
 
 ━━━ SL+ (Move Stop Loss) ━━━
 Use when the position is in PROFIT and you want to lock in gains or protect break-even:
-- Price has moved significantly in our favour (ideally ≥ 50% of the way to TP)
+- Price has moved significantly in our favour 
 - The original thesis is still intact and TP is still the target
 - You want to trail the SL closer to current price to lock profit but NOT close yet
 - Classic use cases:
