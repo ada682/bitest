@@ -511,184 +511,234 @@ function drawPoster(
   });
   ctx.textBaseline = "alphabetic";
 
-  // ── Price Chart (real candle data) ────────────────────────────────────────
+  // ── Price Chart (elegant smooth curve + synced live price) ──────────────
   const arcY = statsYBase + 84;
-  const chX = 28, chW = W - 56, chH = 120;
+  const chX = 28, chW = W - 56, chH = 130;
 
   const _entry2 = signal.entry != null ? Number(signal.entry) : null;
   const _tp2    = signal.tp    != null ? Number(signal.tp)    : null;
   const _sl2    = signal.sl    != null ? Number(signal.sl)    : null;
   const _cur2   = currentPrice > 0 ? currentPrice : (signal.current_price ?? null);
 
-  // Build price array from real candles; fallback to synthetic
-  let prices: number[];
+  // ── Price series from real candles (close) or synthetic fallback ──────────
+  let prices: number[] = [];
   let candleTimes: number[] = [];
   if (candles && candles.length > 2) {
     prices      = candles.map(c => parseFloat(String(c[4])));
     candleTimes = candles.map(c => Number(c[0]));
   } else {
-    // Synthetic fallback centered around entry price
     const base = _entry2 ?? (_cur2 ?? 100);
-    const synth = [0,-0.3,0.2,-0.5,0.4,0.1,-0.2,0.6,0.3,0.7,0.2,0.5,0.3,0.8,0.4,0.9,0.6,1.1,0.8,1.3,1.0,1.5,1.2,1.8,1.4,2.0,1.6,2.2,1.9,2.5,2.1,2.7,2.4,3.0];
-    prices = synth.map(d => base * (1 + d * 0.001));
+    const offs = [0,-0.3,0.2,-0.5,0.4,0.1,-0.2,0.6,0.3,0.7,
+                  0.2,0.5,0.3,0.8,0.4,0.9,0.6,1.1,0.8,1.3,
+                  1.0,1.5,1.2,1.8,1.4,2.0,1.6,2.2,1.9,2.5];
+    prices = offs.map(d => base * (1 + d * 0.001));
   }
+  const n = prices.length;
 
-  // Determine y-range to fit all key levels
-  const allPr = [...prices];
+  // ── Y-range: fit closes + all key price levels ────────────────────────────
+  const allPr: number[] = [...prices];
   if (_entry2 && _entry2 > 0) allPr.push(_entry2);
   if (_cur2   && _cur2   > 0) allPr.push(_cur2);
+  if (_tp2    && _tp2    > 0) allPr.push(_tp2);
+  if (_sl2    && _sl2    > 0) allPr.push(_sl2);
   const rawMin = Math.min(...allPr), rawMax = Math.max(...allPr);
   const rawRng = rawMax - rawMin || rawMax * 0.02 || 1;
-  const pad2   = rawRng * 0.2;
+  const pad2   = rawRng * 0.15;
   const yMin2  = rawMin - pad2, yMax2 = rawMax + pad2, yRng2 = yMax2 - yMin2;
 
-  const toX2 = (i: number) =>
-    chX + 16 + (i / Math.max(prices.length - 1, 1)) * (chW - 32);
+  // ── Coordinate helpers ────────────────────────────────────────────────────
+  // Historical closes fill 85% of chart width; right 15% is "live" extension
+  const histW = chW - 52;
+  const nowX  = chX + chW - 16;
+
+  const toXC = (i: number) => chX + 12 + (i / Math.max(n - 1, 1)) * histW;
   const toY2 = (v: number) =>
-    arcY + chH - 12 - ((v - yMin2) / yRng2) * (chH - 24);
+    arcY + chH - 10 - ((v - yMin2) / yRng2) * (chH - 20);
+
+  // ── Build smooth bezier path through close prices ─────────────────────────
+  // Uses cardinal spline control points for organic, non-jagged curves.
+  const pts = prices.map((v, i) => ({ x: toXC(i), y: toY2(v) }));
+  const liveY = _cur2 && _cur2 > 0 ? toY2(_cur2) : pts[pts.length - 1].y;
+
+  function smoothPath(points: {x:number;y:number}[], tension = 0.35) {
+    // Draw a smooth cubic bezier through all points using cardinal spline
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[Math.max(i - 1, 0)];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[Math.min(i + 2, points.length - 1)];
+      const cp1x = p1.x + (p2.x - p0.x) * tension;
+      const cp1y = p1.y + (p2.y - p0.y) * tension;
+      const cp2x = p2.x - (p3.x - p1.x) * tension;
+      const cp2y = p2.y - (p3.y - p1.y) * tension;
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    }
+  }
 
   // ── Chart background ──────────────────────────────────────────────────────
   rr(ctx, chX, arcY, chW, chH, 14);
-  ctx.fillStyle = "rgba(255,255,255,0.018)"; ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.016)"; ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.055)"; ctx.lineWidth = 1; ctx.stroke();
 
-  // Subtle horizontal grid
-  ctx.strokeStyle = "rgba(255,255,255,0.03)"; ctx.lineWidth = 1;
+  // Clip everything from here
+  ctx.save();
+  rr(ctx, chX, arcY, chW, chH, 14); ctx.clip();
+
+  // Subtle horizontal grid lines
+  ctx.strokeStyle = "rgba(255,255,255,0.025)"; ctx.lineWidth = 1;
   [0.25, 0.5, 0.75].forEach(p => {
     const ly = arcY + chH * p;
-    ctx.beginPath(); ctx.moveTo(chX + 14, ly); ctx.lineTo(chX + chW - 14, ly); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(chX + 10, ly); ctx.lineTo(chX + chW - 10, ly); ctx.stroke();
   });
 
-  // ── TP dashed line ────────────────────────────────────────────────────────
-  if (_tp2 && _tp2 > 0) {
-    const tpY2 = toY2(_tp2);
-    if (tpY2 > arcY + 8 && tpY2 < arcY + chH - 8) {
-      ctx.strokeStyle = "rgba(74,222,128,0.45)"; ctx.lineWidth = 1;
-      ctx.setLineDash([3, 4]);
-      ctx.beginPath(); ctx.moveTo(chX + 14, tpY2); ctx.lineTo(chX + chW - 14, tpY2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#4ade80";
-      ctx.font = "500 7.5px \"JetBrains Mono\",monospace";
-      ctx.textAlign = "right"; ctx.textBaseline = "middle";
-      ctx.fillText(`TP ${smartFmt(_tp2)}`, chX + chW - 16, tpY2 - 6);
+  // ── TP / SL zone fills (subtle color bands) ───────────────────────────────
+  if (_tp2 && _tp2 > 0 && _entry2 && _entry2 > 0) {
+    const y1 = Math.min(toY2(_tp2), toY2(_entry2));
+    const y2 = Math.max(toY2(_tp2), toY2(_entry2));
+    const zg = ctx.createLinearGradient(0, y1, 0, y2);
+    zg.addColorStop(0, "rgba(74,222,128,0.07)"); zg.addColorStop(1, "rgba(74,222,128,0.02)");
+    ctx.fillStyle = zg;
+    ctx.fillRect(chX + 10, Math.max(y1, arcY + 4), chW - 20,
+      Math.min(y2, arcY + chH - 4) - Math.max(y1, arcY + 4));
+  }
+  if (_sl2 && _sl2 > 0 && _entry2 && _entry2 > 0) {
+    const y1 = Math.min(toY2(_sl2), toY2(_entry2));
+    const y2 = Math.max(toY2(_sl2), toY2(_entry2));
+    const zg = ctx.createLinearGradient(0, y1, 0, y2);
+    zg.addColorStop(0, "rgba(248,113,113,0.02)"); zg.addColorStop(1, "rgba(248,113,113,0.07)");
+    ctx.fillStyle = zg;
+    ctx.fillRect(chX + 10, Math.max(y1, arcY + 4), chW - 20,
+      Math.min(y2, arcY + chH - 4) - Math.max(y1, arcY + 4));
+  }
+
+  // ── TP / SL / Entry horizontal lines ─────────────────────────────────────
+  const hlines = [
+    { price: _tp2,    color: "rgba(74,222,128,0.4)",   label: "TP", dash: [4,5] as number[] },
+    { price: _sl2,    color: "rgba(248,113,113,0.4)",  label: "SL", dash: [4,5] as number[] },
+    { price: _entry2, color: "rgba(255,255,255,0.18)", label: "",   dash: [2,7] as number[] },
+  ];
+  hlines.forEach(({ price, color, label, dash }) => {
+    if (!price || price <= 0) return;
+    const ly = toY2(price);
+    if (ly <= arcY + 5 || ly >= arcY + chH - 5) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 0.75;
+    ctx.setLineDash(dash);
+    ctx.beginPath(); ctx.moveTo(chX + 10, ly); ctx.lineTo(chX + chW - 10, ly); ctx.stroke();
+    ctx.setLineDash([]);
+    if (label) {
+      ctx.fillStyle = color.replace(/[\d.]+\)$/, "0.85)");
+      ctx.font = "500 6.5px \"JetBrains Mono\",monospace";
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(label, chX + 14, ly - 5);
       ctx.textBaseline = "alphabetic";
     }
-  }
+  });
 
-  // ── SL dashed line ────────────────────────────────────────────────────────
-  if (_sl2 && _sl2 > 0) {
-    const slY2 = toY2(_sl2);
-    if (slY2 > arcY + 8 && slY2 < arcY + chH - 8) {
-      ctx.strokeStyle = "rgba(248,113,113,0.45)"; ctx.lineWidth = 1;
-      ctx.setLineDash([3, 4]);
-      ctx.beginPath(); ctx.moveTo(chX + 14, slY2); ctx.lineTo(chX + chW - 14, slY2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#f87171";
-      ctx.font = "500 7.5px \"JetBrains Mono\",monospace";
-      ctx.textAlign = "right"; ctx.textBaseline = "middle";
-      ctx.fillText(`SL ${smartFmt(_sl2)}`, chX + chW - 16, slY2 + 7);
-      ctx.textBaseline = "alphabetic";
-    }
-  }
+  // ── Area fill under the smooth curve ─────────────────────────────────────
+  // Gradient from theme color → transparent, includes the live extension
+  const areaGrad = ctx.createLinearGradient(0, arcY, 0, arcY + chH);
+  areaGrad.addColorStop(0, h2r(T.a2, 0.28));
+  areaGrad.addColorStop(0.6, h2r(T.a2, 0.08));
+  areaGrad.addColorStop(1, "transparent");
 
-  // ── Entry dashed line ─────────────────────────────────────────────────────
-  if (_entry2 && _entry2 > 0) {
-    const entY2 = toY2(_entry2);
-    if (entY2 > arcY + 8 && entY2 < arcY + chH - 8) {
-      ctx.strokeStyle = "rgba(255,255,255,0.22)"; ctx.lineWidth = 1;
-      ctx.setLineDash([2, 5]);
-      ctx.beginPath(); ctx.moveTo(chX + 14, entY2); ctx.lineTo(chX + chW - 14, entY2); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-  }
-
-  // ── Price line (area fill first) ──────────────────────────────────────────
-  const pts2 = prices.map((v, i) => ({ x: toX2(i), y: toY2(v) }));
-  const lastPts = pts2[pts2.length - 1];
-
-  const grad2 = ctx.createLinearGradient(0, arcY, 0, arcY + chH);
-  grad2.addColorStop(0, h2r(T.a2, 0.38)); grad2.addColorStop(1, "transparent");
   ctx.beginPath();
-  pts2.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
-  ctx.lineTo(lastPts.x, arcY + chH - 8);
-  ctx.lineTo(pts2[0].x, arcY + chH - 8);
+  smoothPath(pts);
+  // Extend to live price, then close path along bottom
+  ctx.lineTo(nowX, liveY);
+  ctx.lineTo(nowX, arcY + chH - 4);
+  ctx.lineTo(pts[0].x, arcY + chH - 4);
   ctx.closePath();
-  ctx.fillStyle = grad2; ctx.fill();
+  ctx.fillStyle = areaGrad; ctx.fill();
 
-  ctx.beginPath();
-  pts2.forEach((p2, i) => i === 0 ? ctx.moveTo(p2.x, p2.y) : ctx.lineTo(p2.x, p2.y));
-  ctx.strokeStyle = T.a1; ctx.lineWidth = 2;
-  ctx.lineJoin = "round"; ctx.stroke();
+  // ── Smooth price line (glowing stroke) ────────────────────────────────────
+  // Draw the glow pass first (wider, blurred), then the crisp line on top
+  ctx.save();
+  ctx.shadowColor = T.a1; ctx.shadowBlur = 8;
+  ctx.beginPath(); smoothPath(pts);
+  ctx.strokeStyle = h2r(T.a1, 0.35); ctx.lineWidth = 4;
+  ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
+  ctx.restore();
 
-  // ── Entry marker on price line ────────────────────────────────────────────
-  if (_entry2 && _entry2 > 0 && prices.length > 2) {
-    // Find candle closest in time to signal.timestamp
-    let entXIdx = Math.floor(prices.length * 0.35); // default ~35% from left
+  ctx.beginPath(); smoothPath(pts);
+  ctx.strokeStyle = T.a1; ctx.lineWidth = 1.8;
+  ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
+
+  // ── Live extension: dotted bridge from last historical close → now ────────
+  // This is THE fix: the dot is always the endpoint of a connected segment,
+  // never floating. Dotted style signals "price still moving".
+  const lastPt = pts[pts.length - 1];
+  ctx.setLineDash([2, 4]);
+  ctx.strokeStyle = h2r(T.a1, 0.4); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(lastPt.x, lastPt.y); ctx.lineTo(nowX, liveY);
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // ── Entry crosshair + dot ─────────────────────────────────────────────────
+  if (_entry2 && _entry2 > 0 && n > 2) {
+    let entXIdx = Math.floor(n * 0.35);
     if (candleTimes.length > 0 && signal.timestamp) {
       let minDiff = Infinity;
-      candleTimes.forEach((t, i) => {
+      candleTimes.forEach((t, idx) => {
         const diff = Math.abs(t - signal.timestamp);
-        if (diff < minDiff) { minDiff = diff; entXIdx = i; }
+        if (diff < minDiff) { minDiff = diff; entXIdx = idx; }
       });
     }
-    const entMX = toX2(entXIdx);
+    const entMX = toXC(entXIdx);
     const entMY = toY2(_entry2);
 
-    // Vertical tick at entry x
-    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
-    ctx.setLineDash([2, 4]);
-    ctx.beginPath(); ctx.moveTo(entMX, arcY + 6); ctx.lineTo(entMX, arcY + chH - 6); ctx.stroke();
+    // Vertical tick
+    ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1;
+    ctx.setLineDash([2, 5]);
+    ctx.beginPath(); ctx.moveTo(entMX, arcY + 5); ctx.lineTo(entMX, arcY + chH - 5); ctx.stroke();
     ctx.setLineDash([]);
 
-    // Entry dot (white ring)
-    ctx.beginPath(); ctx.arc(entMX, entMY, 5, 0, Math.PI * 2);
+    // Dot at entry price level (not at close price)
+    ctx.beginPath(); ctx.arc(entMX, entMY, 4.5, 0, Math.PI * 2);
     ctx.fillStyle = T.bg1; ctx.fill();
-    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5; ctx.stroke();
-
-    // Inner accent dot
-    ctx.beginPath(); ctx.arc(entMX, entMY, 2.5, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.arc(entMX, entMY, 2, 0, Math.PI * 2);
     ctx.fillStyle = T.a1; ctx.fill();
 
-    // "ENTRY" label below x-axis tick
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
-    ctx.font = "500 7px \"JetBrains Mono\",monospace";
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.fillText("ENTRY", entMX, arcY + chH - 11);
+    // Label
+    ctx.fillStyle = "rgba(255,255,255,0.3)";
+    ctx.font = "400 6px \"JetBrains Mono\",monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    ctx.fillText("ENTRY", entMX, arcY + chH - 2);
     ctx.textBaseline = "alphabetic";
   }
 
-  // ── Current price dot (glowing, at rightmost candle) ─────────────────────
-  if (_cur2 && _cur2 > 0 && prices.length > 0) {
-    // Use the actual live price for y, but pin to last x
-    const cpX = toX2(prices.length - 1);
-    const cpY = toY2(_cur2);
-
-    // Outer glow ring
+  // ── Live price dot — always at the end of the line ───────────────────────
+  if (_cur2 && _cur2 > 0) {
+    // Soft pulse ring
     ctx.save();
-    ctx.shadowColor = T.a1; ctx.shadowBlur = 10;
-    ctx.beginPath(); ctx.arc(cpX, cpY, 5.5, 0, Math.PI * 2);
-    ctx.fillStyle = T.a1; ctx.fill();
+    ctx.shadowColor = T.a1; ctx.shadowBlur = 16;
+    ctx.beginPath(); ctx.arc(nowX, liveY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = h2r(T.a1, 0.25); ctx.fill();
     ctx.restore();
-    // White inner dot
-    ctx.beginPath(); ctx.arc(cpX, cpY, 2.5, 0, Math.PI * 2);
+    // Solid glow dot
+    ctx.beginPath(); ctx.arc(nowX, liveY, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = T.a1; ctx.fill();
+    // White core
+    ctx.beginPath(); ctx.arc(nowX, liveY, 2, 0, Math.PI * 2);
     ctx.fillStyle = "#ffffff"; ctx.fill();
 
-    // Price label (left side of dot)
+    // Price pill to the left of the dot
     const prLabel = `$${smartFmt(_cur2)}`;
-    ctx.font = "600 8.5px \"JetBrains Mono\",monospace";
+    ctx.font = "600 7.5px \"JetBrains Mono\",monospace";
     const lblW = ctx.measureText(prLabel).width;
-    const lblX = cpX - lblW - 10;
-    const lblY = cpY - 6;
-    if (lblX > chX + 14) {
-      // pill background
-      rr(ctx, lblX - 4, lblY - 3, lblW + 8, 13, 3);
-      ctx.fillStyle = h2r(T.a2, 0.5); ctx.fill();
-      ctx.fillStyle = T.a1;
-      ctx.textAlign = "left"; ctx.textBaseline = "middle";
-      ctx.fillText(prLabel, lblX, lblY + 3.5);
-      ctx.textBaseline = "alphabetic";
-    }
+    let pillX = nowX - lblW - 16;
+    if (pillX < chX + 14) pillX = nowX + 10;
+    const pillY = liveY - 6.5;
+    rr(ctx, pillX - 5, pillY - 1, lblW + 10, 14, 3);
+    ctx.fillStyle = h2r(T.a3, 0.85); ctx.fill();
+    ctx.strokeStyle = h2r(T.a1, 0.4); ctx.lineWidth = 0.5; ctx.stroke();
+    ctx.fillStyle = T.a1;
+    ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText(prLabel, pillX, pillY + 6);
+    ctx.textBaseline = "alphabetic";
   }
+
+  ctx.restore(); // end chart clip
 
   // ── Bottom bar ────────────────────────────────────────────────────────────
   const botBarH = 80;
@@ -1004,9 +1054,9 @@ function PosterModal({
                         : "border-border text-muted hover:text-text hover:border-border/80"
                     }`}
                   >
-                    {m === "roe"  && "📊 ROE only"}
-                    {m === "pnl"  && "💰 PnL only"}
-                    {m === "both" && "✨ ROE + PnL"}
+                    {m === "roe"  && "ROE only"}
+                    {m === "pnl"  && "PnL only"}
+                    {m === "both" && "ROE + PnL"}
                   </button>
                 ))}
               </div>
