@@ -5,6 +5,8 @@ Perbedaan dari versi sebelumnya:
   - Hanya 1 token (MONITOR_TOKEN_1, atau fallback ke QWEN_TOKEN_1)
   - Pakai ai_lock() agar tidak bentrok dengan analysis AI
   - Retry terus sampai dapat HOLD/CLOSE yang valid
+  - Menyertakan opened_at, original_prompt, dan original_ai_response
+    agar AI monitor tahu kapan posisi dibuka dan apa thesis aslinya.
 
 Env vars:
   MONITOR_TOKEN_1           — bearer token khusus monitor
@@ -17,6 +19,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -48,21 +52,34 @@ else:
 POSITION_SYSTEM_PROMPT = """You are a position management AI for a crypto futures trading bot.
 
 An ACTIVE OPEN POSITION is running — entry price has already been hit.
-The ORIGINAL OPEN ANALYSIS that triggered this trade will be provided to you.
-Your job: using BOTH the original thesis AND the latest candle data, decide HOLD or CLOSE right now.
+You will receive:
+  1. When the position was opened (OPENED AT)
+  2. The exact prompt the analysis AI received when it decided to enter this trade
+  3. The analysis AI's full response that justified the entry
+  4. The current position status and latest candle data
+
+CRITICAL TIME AWARENESS:
+- "OPENED AT" tells you how long this trade has been running.
+- If the position was opened very recently (seconds to a few minutes ago), be VERY RELUCTANT to
+  CLOSE based solely on price movement away from entry — the trade has barely started.
+- The analysis AI's original prompt + response is the ground truth for WHY this trade was entered.
+  Your job is to judge whether that thesis is STILL VALID, not whether the current price looks scary.
+- Price naturally moves against a new position briefly before reaching TP — do NOT mistake normal
+  volatility for thesis invalidation.
 
 CLOSE if:
-- The original thesis (trend/pattern/void) has been invalidated
-- Clear reversal structure against position direction
-- Key structure broken (lower low for LONG / higher high for SHORT)
-- Momentum fading with no recovery sign
+- The original thesis (trend/pattern/void/structure) has been clearly invalidated by NEW candle data
+- Clear reversal structure has formed AFTER entry (lower low for LONG / higher high for SHORT)
+- The specific pattern or level cited in the original analysis has broken
+- Momentum has definitively shifted with no recovery sign over multiple candles
 - Risk/reward no longer justifies holding — better a small loss now than full SL
 
 HOLD if:
-- Trend and structure still support the original thesis
-- Normal pullback/consolidation within trade direction
-- TP still reachable from current price structure
-- Original void/pattern hasn't been violated
+- The original analysis thesis is still intact
+- Price is in normal pullback/consolidation within the trade direction
+- TP is still reachable from current price structure
+- The position was opened recently and no structural invalidation has occurred yet
+- Original void/pattern/level hasn't been violated
 
 Rules:
 - Respond with EXACTLY this JSON and nothing else:
@@ -70,6 +87,35 @@ Rules:
 - No markdown, no preamble, no extra text outside the JSON
 - decision must be exactly "HOLD" or "CLOSE"
 """
+
+
+def _fmt_ts(ts_ms: Optional[int]) -> str:
+    """Format a millisecond timestamp to a human-readable UTC string."""
+    if not ts_ms:
+        return "unknown"
+    try:
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return str(ts_ms)
+
+
+def _elapsed(opened_at_ms: Optional[int]) -> str:
+    """Return human-readable elapsed time since position opened."""
+    if not opened_at_ms:
+        return "unknown"
+    try:
+        elapsed_s = int(time.time()) - int(opened_at_ms / 1000)
+        if elapsed_s < 60:
+            return f"{elapsed_s}s ago"
+        elif elapsed_s < 3600:
+            return f"{elapsed_s // 60}m {elapsed_s % 60}s ago"
+        else:
+            h = elapsed_s // 3600
+            m = (elapsed_s % 3600) // 60
+            return f"{h}h {m}m ago"
+    except Exception:
+        return "unknown"
 
 
 class PositionAIClient:
@@ -101,16 +147,19 @@ class PositionAIClient:
 
     async def decide(
         self,
-        symbol:            str,
-        direction:         str,
-        entry:             float,
-        tp:                float,
-        sl:                float,
-        current_price:     float,
-        candles_by_tf:     dict,
-        leverage:          int,
-        margin_usdt:       float,
-        original_analysis: dict = None,   # ← NEW: original open-trade AI analysis
+        symbol:                str,
+        direction:             str,
+        entry:                 float,
+        tp:                    float,
+        sl:                    float,
+        current_price:         float,
+        candles_by_tf:         dict,
+        leverage:              int,
+        margin_usdt:           float,
+        original_analysis:     dict = None,   # structured fields: trend, pattern, reason, confidence
+        opened_at:             Optional[int] = None,   # ms timestamp when position was opened
+        original_prompt:       Optional[str] = None,   # the raw prompt sent to analysis AI
+        original_ai_response:  Optional[str] = None,   # the raw response from analysis AI
     ) -> Optional[dict]:
         if direction == "LONG":
             pnl_pct   = round((current_price - entry) / entry * 100, 3)
@@ -125,7 +174,18 @@ class PositionAIClient:
         sign     = "+" if pnl_pct >= 0 else ""
         pnl_icon = "🟢" if pnl_pct >= 0 else "🔴"
 
-        # ── Build original analysis block ─────────────────────────────
+        # ── Build time context block ───────────────────────────────────
+        opened_str  = _fmt_ts(opened_at)
+        elapsed_str = _elapsed(opened_at)
+        time_block = (
+            f"\n━━━ POSITION TIMING ━━━\n"
+            f"  Opened At:    {opened_str}\n"
+            f"  Time Elapsed: {elapsed_str}\n"
+            f"  Current Time: {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        # ── Build original analysis block ──────────────────────────────
         orig_block = ""
         if original_analysis:
             orig_trend  = original_analysis.get("trend",      "N/A")
@@ -133,14 +193,37 @@ class PositionAIClient:
             orig_reason = original_analysis.get("reason",     "N/A")
             orig_conf   = original_analysis.get("confidence", "N/A")
             orig_block = (
-                f"\n━━━ ORIGINAL OPEN ANALYSIS ━━━\n"
+                f"\n━━━ ORIGINAL OPEN ANALYSIS (structured) ━━━\n"
                 f"  Trend:      {orig_trend}\n"
                 f"  Pattern:    {orig_pat}\n"
                 f"  Confidence: {orig_conf}%\n"
                 f"  Reason:     {orig_reason}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 
+        # ── Build original prompt/response block ───────────────────────
+        conversation_block = ""
+        if original_prompt or original_ai_response:
+            parts = ["\n━━━ ORIGINAL ANALYSIS CONVERSATION ━━━"]
+            if original_prompt:
+                # Truncate very long prompts to avoid token bloat
+                prompt_preview = original_prompt[:2000]
+                if len(original_prompt) > 2000:
+                    prompt_preview += "\n... [truncated]"
+                parts.append(
+                    f"\n[MY PROMPT TO ANALYSIS AI]\n{prompt_preview}"
+                )
+            if original_ai_response:
+                response_preview = original_ai_response[:2000]
+                if len(original_ai_response) > 2000:
+                    response_preview += "\n... [truncated]"
+                parts.append(
+                    f"\n[ANALYSIS AI RESPONSE]\n{response_preview}"
+                )
+            parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+            conversation_block = "\n".join(parts)
+
+        # ── Build OHLCV blocks ─────────────────────────────────────────
         ohlcv_blocks = []
         for tf, candles in candles_by_tf.items():
             recent = candles[-80:]
@@ -152,8 +235,10 @@ class PositionAIClient:
 
         user_text = (
             f"ACTIVE POSITION — HOLD or CLOSE?\n"
-            f"{orig_block}\n"
-            f"━━━ POSITION STATUS ━━━\n"
+            f"{time_block}"
+            f"{orig_block}"
+            f"{conversation_block}\n"
+            f"━━━ CURRENT POSITION STATUS ━━━\n"
             f"  Symbol:         {symbol}\n"
             f"  Direction:      {direction}\n"
             f"  Entry:          {entry}\n"
@@ -163,9 +248,11 @@ class PositionAIClient:
             f"  {pnl_icon} Unrealized PnL: {sign}{pnl_pct}%  ({sign}{pnl_usdt} USDT)\n"
             f"  Leverage:       {leverage}x\n"
             f"  Margin Used:    {margin_usdt} USDT\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{chr(10).join(ohlcv_blocks)}\n\n"
-            f"Charts attached above. Does the original thesis still hold?\n"
+            f"Charts attached above.\n"
+            f"Remember: this position was opened {elapsed_str}. "
+            f"Judge whether the ORIGINAL THESIS is still valid — not just current price.\n"
             f'Respond ONLY with JSON: {{"decision": "HOLD" or "CLOSE", "reason": "brief reason"}}'
         )
 
@@ -192,7 +279,7 @@ class PositionAIClient:
         }
 
         lock = ai_lock()
-        print(f"[PositionAI] waiting for lock ({symbol} {direction} pnl={sign}{pnl_pct}%)")
+        print(f"[PositionAI] waiting for lock ({symbol} {direction} pnl={sign}{pnl_pct}% elapsed={elapsed_str})")
         async with lock:
             print(f"[PositionAI] lock acquired → hold/close query for {symbol}")
             data = None
@@ -276,17 +363,20 @@ class PositionMonitorAI:
 
     async def decide_with_retry(
         self,
-        symbol:            str,
-        direction:         str,
-        entry:             float,
-        tp:                float,
-        sl:                float,
-        current_price:     float,
-        candles_by_tf:     dict,
-        leverage:          int,
-        margin_usdt:       float,
-        original_analysis: dict = None,   # ← NEW
-        max_retries:       int  = 999,
+        symbol:                str,
+        direction:             str,
+        entry:                 float,
+        tp:                    float,
+        sl:                    float,
+        current_price:         float,
+        candles_by_tf:         dict,
+        leverage:              int,
+        margin_usdt:           float,
+        original_analysis:     dict = None,
+        opened_at:             Optional[int] = None,   # ← NEW: ms timestamp
+        original_prompt:       Optional[str] = None,   # ← NEW: prompt sent to analysis AI
+        original_ai_response:  Optional[str] = None,   # ← NEW: analysis AI's response text
+        max_retries:           int  = 999,
     ) -> dict:
         """Retry sampai dapat HOLD/CLOSE. Backoff 10s → 30s."""
         if not self._client:
@@ -294,11 +384,19 @@ class PositionMonitorAI:
 
         for attempt in range(max_retries):
             result = await self._client.decide(
-                symbol=symbol, direction=direction, entry=entry,
-                tp=tp, sl=sl, current_price=current_price,
+                symbol=symbol,
+                direction=direction,
+                entry=entry,
+                tp=tp,
+                sl=sl,
+                current_price=current_price,
                 candles_by_tf=candles_by_tf,
-                leverage=leverage, margin_usdt=margin_usdt,
+                leverage=leverage,
+                margin_usdt=margin_usdt,
                 original_analysis=original_analysis,
+                opened_at=opened_at,
+                original_prompt=original_prompt,
+                original_ai_response=original_ai_response,
             )
             if result and result.get("decision") in ("HOLD", "CLOSE"):
                 return result
