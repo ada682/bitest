@@ -1,7 +1,7 @@
 import clsx from "clsx";
 
 type Decision = "LONG" | "SHORT" | "NO TRADE";
-type Result   = "TP" | "SL" | "INVALIDATED" | null | undefined;
+type Result   = "TP" | "SL" | "AI_CLOSE" | "INVALIDATED" | "TIMEOUT" | null | undefined;
 
 export function DecisionBadge({ decision }: { decision: Decision }) {
   return (
@@ -18,14 +18,22 @@ export function DecisionBadge({ decision }: { decision: Decision }) {
 
 export function ResultBadge({ result }: { result: Result }) {
   if (!result) return null;
+
+  const label =
+    result === "AI_CLOSE" ? "AI ✕" :
+    result === "TIMEOUT"  ? "T/O"  :
+    result;
+
   return (
     <span className={clsx(
       "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold font-mono tracking-wide uppercase",
       result === "TP"          && "bg-success/10 text-success border border-success/20",
       result === "SL"          && "bg-danger/10 text-danger border border-danger/20",
+      result === "AI_CLOSE"    && "bg-accent/10 text-accent border border-accent/20",
       result === "INVALIDATED" && "bg-muted/10 text-muted border border-muted/20",
+      result === "TIMEOUT"     && "bg-muted/10 text-muted/60 border border-muted/10",
     )}>
-      {result}
+      {label}
     </span>
   );
 }
