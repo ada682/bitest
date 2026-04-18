@@ -164,9 +164,9 @@ export default function DashboardClient() {
 
       setState((prev) => {
         const signals = (prev.signals ?? []).filter((s) => s.id !== closed.id);
-        // Count wins: TP hit OR AI_CLOSE in profit; losses: SL hit OR AI_CLOSE at loss
-        const isWin  = closed.result === "TP" || (closed.result === "AI_CLOSE" && (closed.pnl_pct ?? 0) >= 0);
-        const isLoss = closed.result === "SL" || (closed.result === "AI_CLOSE" && (closed.pnl_pct ?? 0) <  0);
+        // Win/loss based on pnl — covers SL+ case where SL hit = profit
+        const isWin  = (closed.pnl_pct ?? 0) >= 0 && closed.result !== null && closed.result !== "INVALIDATED" && closed.result !== "TIMEOUT";
+        const isLoss = (closed.pnl_pct ?? 0) <  0 && closed.result !== null && closed.result !== "INVALIDATED" && closed.result !== "TIMEOUT";
         const wins    = (prev.win_count  ?? 0) + (isWin  ? 1 : 0);
         const losses  = (prev.loss_count ?? 0) + (isLoss ? 1 : 0);
         const total   = wins + losses;
