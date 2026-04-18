@@ -536,8 +536,6 @@ function drawPoster(
   // Determine y-range to fit all key levels
   const allPr = [...prices];
   if (_entry2 && _entry2 > 0) allPr.push(_entry2);
-  if (_tp2    && _tp2    > 0) allPr.push(_tp2);
-  if (_sl2    && _sl2    > 0) allPr.push(_sl2);
   if (_cur2   && _cur2   > 0) allPr.push(_cur2);
   const rawMin = Math.min(...allPr), rawMax = Math.max(...allPr);
   const rawRng = rawMax - rawMin || rawMax * 0.02 || 1;
