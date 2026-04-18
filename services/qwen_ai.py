@@ -11,7 +11,7 @@ Features:
 Railway env vars:
   QWEN_TOKEN_1 .. QWEN_TOKEN_5  ← bearer tokens from chat.qwen.ai (at least 1)
   QWEN_BASE_URL                 ← default: https://qwen-web-gateway.onrender.com
-  QWEN_MODEL                    ← default: qwen3.5-plus
+  QWEN_MODEL                    ← default: qwen3.6-plus
   QWEN_THINKING_MODE            ← default: Thinking  (Auto | Thinking | Fast)
 
 Token expiry & refresh:
@@ -31,6 +31,8 @@ import os
 from typing import Dict, List, Optional
 
 import httpx
+
+from services.ai_lock import ai_lock   # ← FIX: was missing, caused NameError on ai_lock()
 
 logger = logging.getLogger(__name__)
 
