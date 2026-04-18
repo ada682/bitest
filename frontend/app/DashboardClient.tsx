@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
-import type { Signal, BotState, WsEvent } from "@/lib/types";
+import type { Signal, BotState, WsEvent, AiUpdatePayload } from "@/lib/types";
 
 import Sidebar      from "@/components/Sidebar";
 import Header       from "@/components/Header";
@@ -146,8 +146,8 @@ export default function DashboardClient() {
 
     // AI hold/close/sl+ decision update
     if (msg.event === "signal_ai_update") {
-      const { id, decision, reason, new_sl } =
-        msg.data as { id: string; decision: string; reason: string; new_sl?: number | null };
+      const { id, decision, reason } =
+        msg.data as AiUpdatePayload;
       setState((prev) => ({
         ...prev,
         signals: (prev.signals ?? []).map((s) =>
