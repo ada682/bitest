@@ -42,6 +42,8 @@ function SlPlusBadge({ count }: { count?: number }) {
     </span>
   );
 }
+
+function EntryStatus({ signal }: { signal: Signal }) {
   if (signal.status === "CLOSED")      return null;
   if (signal.status === "INVALIDATED") return null;
   if (signal.status === "NO TRADE")    return null;
