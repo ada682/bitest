@@ -80,6 +80,32 @@ export default function SignalPanel({ signal }: { signal: Signal | null }) {
         </div>
       )}
 
+      {/* SL+ indicator */}
+      {(signal.sl_plus_count ?? 0) > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-emerald-400/5 border-emerald-400/20 text-emerald-400 text-xs font-mono">
+          <span className="text-base leading-none">🛡</span>
+          SL moved {signal.sl_plus_count}×
+          {signal.last_ai_decision === "SL+" && signal.last_ai_reason && (
+            <span className="text-emerald-400/60 truncate">— {signal.last_ai_reason}</span>
+          )}
+        </div>
+      )}
+
+      {/* Last AI monitor decision (HOLD shown subtly, CLOSE shown more prominently) */}
+      {signal.last_ai_decision && signal.last_ai_decision !== "SL+" && (
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-mono ${
+          signal.last_ai_decision === "CLOSE"
+            ? "bg-danger/5 border-danger/20 text-danger/80"
+            : "bg-border/30 border-border/50 text-muted/70"
+        }`}>
+          <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60" />
+          AI: {signal.last_ai_decision}
+          {signal.last_ai_reason && (
+            <span className="opacity-60 truncate">— {signal.last_ai_reason}</span>
+          )}
+        </div>
+      )}
+
       {/* Invalidated indicator */}
       {isInvalidated && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-danger/5 border-danger/20 text-danger/80 text-xs font-mono">
