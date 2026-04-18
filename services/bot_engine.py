@@ -633,23 +633,27 @@ class BotEngine:
                 elif price >= sl_f: hit = "SL"
 
             if hit:
-                pnl_pct  = round(
-                    (price - entry) / entry * 100 if direction == "LONG"
-                    else (entry - price) / entry * 100, 4
-                ) if entry > 0 else 0.0
                 close_p  = tp_f if hit == "TP" else sl_f
-                pnl_usdt = virtual_exchange.apply_result(hit, direction, entry, close_p)
+                pnl_pct  = round(
+                    (close_p - entry) / entry * 100 if direction == "LONG"
+                    else (entry - close_p) / entry * 100, 4
+                ) if entry > 0 else 0.0
+                # Use pnl_pct (not hit label) to determine win/loss —
+                # after SL+, sl_f may be above entry so SL hit = profit
+                ve_label = "TP" if pnl_pct >= 0 else "SL"
+                pnl_usdt = virtual_exchange.apply_result(ve_label, direction, entry, close_p)
 
                 signal.update({
                     "status":       "CLOSED",
-                    "result":       hit,
+                    "result":       hit,          # keep "TP"/"SL" as the trigger label
                     "pnl_pct":      pnl_pct,
                     "pnl_usdt":     pnl_usdt,
                     "closed_at":    int(time.time() * 1000),
                     "closed_price": close_p,
                 })
                 self.state["trade_count"] += 1
-                if hit == "TP":
+                # Win = positive pnl (covers SL+ hit above entry)
+                if pnl_pct >= 0:
                     self.state["win_count"] += 1
                 else:
                     self.state["loss_count"] += 1
