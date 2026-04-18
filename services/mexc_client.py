@@ -15,6 +15,60 @@ logger = logging.getLogger(__name__)  # ← FIX: was missing
 
 MEXC_BASE_URL = "https://api.mexc.com"
 
+# ---------------------------------------------------------------------------
+# Non-crypto asset blacklist
+# ---------------------------------------------------------------------------
+# MEXC Futures menyertakan US stock futures & commodity futures yang memakai
+# format simbol yang sama dengan crypto (e.g. NVDA_USDT, TSLA_USDT).
+# Bot ini hanya untuk crypto — semua aset di bawah akan di-skip.
+#
+# Pengecualian: XAU (Gold perpetual) tetap diizinkan karena berkorelasi
+# kuat dengan crypto dan sering dipakai sebagai hedge reference.
+#
+# Sumber: https://www.mexc.com/futures/stock-futures
+# ---------------------------------------------------------------------------
+
+# US Stock futures (tokenized equities)
+_STOCK_BASE_COINS: set[str] = {
+    # Tech & Growth
+    "NVDA", "AAPL", "AMZN", "GOOGL", "META", "MSFT", "AMD", "ADBE", "NFLX",
+    # EV / Consumer
+    "TSLA", "MCD",
+    # Finance / Crypto-native stocks
+    "COIN", "HOOD", "CRCL",
+    # Defense / Other equities
+    "PLTR", "DFDV",
+    # ETFs
+    "QQQ", "SPY", "SPXS", "SQQQ", "TQQQ",
+    # Strategy/Leveraged equity products
+    "MSTR",
+}
+
+# Commodity futures (non-crypto, non-XAU)
+_COMMODITY_BASE_COINS: set[str] = {
+    # Crude oil
+    "OIL", "WTI", "BRENT", "CRUDE",
+    # Silver / other metals (XAU is intentionally excluded from this set)
+    "XAG", "SILVER",
+    # Misc commodities
+    "GAS", "NGAS",
+}
+
+# Combined blacklist — O(1) lookup
+_BLACKLISTED_BASE_COINS: set[str] = _STOCK_BASE_COINS | _COMMODITY_BASE_COINS
+
+
+def _is_non_crypto(base_coin: str) -> bool:
+    """Return True if baseCoin is a non-crypto asset that should be skipped."""
+    bc = (base_coin or "").upper()
+    # Exact match against blacklist
+    if bc in _BLACKLISTED_BASE_COINS:
+        return True
+    # Catch any future MEXC additions that end with 'STOCK' (e.g. NVDASTOCK)
+    if bc.endswith("STOCK"):
+        return True
+    return False
+
 # Map bot timeframes → MEXC interval strings
 INTERVAL_MAP = {
     "1m":  "Min1",
@@ -72,10 +126,15 @@ class MexcClient:
         raw = resp.get("data") or []
         if isinstance(raw, dict):
             raw = [raw]
+        skipped_non_crypto = 0
         result = []
         for c in raw:
             # state 0 = enabled/trading
             if c.get("quoteCoin") == "USDT" and c.get("state") == 0:
+                base = c.get("baseCoin", "")
+                if _is_non_crypto(base):
+                    skipped_non_crypto += 1
+                    continue
                 result.append({
                     "symbol":       c.get("symbol"),          # e.g. "BTC_USDT"
                     "baseCoin":     c.get("baseCoin"),
@@ -87,6 +146,15 @@ class MexcClient:
                     "minVol":       c.get("minVol", 1),
                     "maxVol":       c.get("maxVol"),
                 })
+        if skipped_non_crypto:
+            logger.info(
+                f"get_contracts: skipped {skipped_non_crypto} non-crypto contracts "
+                f"(US stocks / commodities). Returning {len(result)} crypto contracts."
+            )
+            print(
+                f"[MexcClient] Skipped {skipped_non_crypto} non-crypto contracts "
+                f"(stocks/oil/silver). {len(result)} crypto contracts kept."
+            )
         return result
 
     async def get_ticker(self, symbol: str) -> dict:
